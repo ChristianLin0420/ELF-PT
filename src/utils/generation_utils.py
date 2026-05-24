@@ -263,18 +263,26 @@ def _shard_thought_noise(device_rngs, num_local_devices, per_device, K, max_leng
     ])
 
 
-def _build_thought_masks_batch(B, L, K, cond_seq_mask=None):
-    """Build (intra_mask, inter_mask) for a batch of size B.
+def _build_thought_masks_batch(cond_seq_mask, attention_mask, config):
+    """Build (intra_mask, inter_mask) for a batch.
 
-    For unconditional generation (cond_seq_mask is None), all tokens are treated
-    as non-cond valid tokens.
+    Dispatches on config.num_reasoning_thoughts:
+      - R-mode  (> 0): uses build_thought_masks_with_answer (causal inter mask).
+      - Standard(== 0): uses build_thought_masks (symmetric inter mask).
+
+    Args:
+        cond_seq_mask: (B, L) bool or float array; True/1 for conditioning tokens.
+        attention_mask: (B, L) bool or float array; True/1 for non-padding tokens.
+        config: Config instance with num_reasoning_thoughts and num_thoughts.
     """
-    if cond_seq_mask is not None:
-        is_cond = (cond_seq_mask > 0).astype(jnp.bool_)
-    else:
-        is_cond = jnp.zeros((B, L), dtype=jnp.bool_)
-    is_valid = jnp.ones((B, L), dtype=jnp.bool_)
-    return build_thought_masks(is_cond, is_valid, K)
+    is_cond = cond_seq_mask.astype(jnp.bool_)
+    is_valid = attention_mask.astype(jnp.bool_)
+    if getattr(config, 'num_reasoning_thoughts', 0) > 0:
+        from utils.thought_mask_utils import build_thought_masks_with_answer
+        return build_thought_masks_with_answer(
+            is_cond, is_valid, K_reasoning=config.num_reasoning_thoughts,
+        )
+    return build_thought_masks(is_cond, is_valid, K=config.num_thoughts)
 
 
 def _thought_generate_single_batch(
@@ -311,9 +319,12 @@ def _thought_generate_single_batch(
     L = z.shape[1] // K
 
     # Build attention masks once — constant across steps
-    intra_mask, inter_mask = _build_thought_masks_batch(
-        B, L, K, cond_seq_mask=cond_seq_mask,
-    )
+    if cond_seq_mask is not None:
+        _is_cond = (cond_seq_mask > 0).astype(jnp.bool_)
+    else:
+        _is_cond = jnp.zeros((B, L), dtype=jnp.bool_)
+    _is_valid = jnp.ones((B, L), dtype=jnp.bool_)
+    intra_mask, inter_mask = _build_thought_masks_batch(_is_cond, _is_valid, config)
 
     # Replicate cond tokens K times and restore them into z
     if cond_seq is not None:
@@ -370,7 +381,9 @@ def _thought_decode_batch(z, model_params, model_apply_fn, t_final_val, config):
     L = z.shape[1] // K
 
     # Build masks (unconditional: no cond tokens)
-    intra_mask, inter_mask = _build_thought_masks_batch(B, L, K, cond_seq_mask=None)
+    _is_cond = jnp.zeros((B, L), dtype=jnp.bool_)
+    _is_valid = jnp.ones((B, L), dtype=jnp.bool_)
+    intra_mask, inter_mask = _build_thought_masks_batch(_is_cond, _is_valid, config)
 
     state = _SamplingState(apply_fn=model_apply_fn, params=model_params)
     return thought_final_decode(state, z, intra_mask, inter_mask, t_final=jnp.full((B,), t_final_val))
