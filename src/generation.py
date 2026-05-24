@@ -25,6 +25,7 @@ from utils.generation_utils import (
     mask_after_eos, shift_left,
     _setup_generation, _make_pmap_pair, _shard_timesteps, _shard_noise,
     _build_run_name,
+    _make_thought_pmap_pair, _shard_thought_noise,
 )
 
 
@@ -111,9 +112,14 @@ def test_generation_uncond(
         log_for_0(f"\n--- Method: {sampling_method}, Steps: {num_sampling_steps}, "
                   f"CFG Scale: {cfg_scale}, SC-CFG: {self_cond_cfg_scale} ---")
 
-        p_generate, p_decode_ids = _make_pmap_pair(
-            model_apply_fn, config, sampling_config, cfg_scale, self_cond_cfg_scale,
-        )
+        if config.num_thoughts > 1:
+            p_generate, p_decode_ids = _make_thought_pmap_pair(
+                model_apply_fn, config, sampling_config,
+            )
+        else:
+            p_generate, p_decode_ids = _make_pmap_pair(
+                model_apply_fn, config, sampling_config, cfg_scale, self_cond_cfg_scale,
+            )
 
         all_generated = []
         generation_time = 0.0
@@ -138,27 +144,54 @@ def test_generation_uncond(
             t_steps_sharded = _shard_timesteps(
                 t_rng, num_local_devices, num_sampling_steps, time_schedule, config,
             )
-            z_sharded = _shard_noise(
-                device_rngs, num_local_devices, current_per_device,
-                config.max_length, d_model, config.denoiser_noise_scale,
-            )
 
-            gen_start = time.time()
-            latent_sharded = p_generate(
-                model_params=model_params_replicated, rng=device_rngs,
-                z=z_sharded, t_steps=t_steps_sharded,
-                cond_seq=None, cond_seq_mask=None,
-            )
-            latent_sharded.block_until_ready()
-            generation_time += time.time() - gen_start
+            if config.num_thoughts > 1:
+                # K-thought path: z has shape (num_devices, per_device, K*L, D)
+                z_sharded = _shard_thought_noise(
+                    device_rngs, num_local_devices, current_per_device,
+                    config.num_thoughts, config.max_length, d_model,
+                    config.denoiser_noise_scale,
+                )
+                gen_start = time.time()
+                latent_sharded = p_generate(
+                    model_params=model_params_replicated, rng=device_rngs,
+                    z=z_sharded, t_steps=t_steps_sharded,
+                    cond_seq=None, cond_seq_mask=None,
+                )
+                latent_sharded.block_until_ready()
+                generation_time += time.time() - gen_start
 
-            dec_start = time.time()
-            t_final_sharded = t_steps_sharded[:, -1]
-            predicted_ids_sharded = p_decode_ids(
-                z=latent_sharded, model_params=model_params_replicated, t_final_val=t_final_sharded,
-            )
-            predicted_ids_sharded.block_until_ready()
-            decode_time += time.time() - dec_start
+                dec_start = time.time()
+                t_final_sharded = t_steps_sharded[:, -1]
+                predicted_ids_sharded = p_decode_ids(
+                    z=latent_sharded, model_params=model_params_replicated,
+                    t_final_val=t_final_sharded,
+                )
+                predicted_ids_sharded.block_until_ready()
+                decode_time += time.time() - dec_start
+            else:
+                # K=1 path (unchanged)
+                z_sharded = _shard_noise(
+                    device_rngs, num_local_devices, current_per_device,
+                    config.max_length, d_model, config.denoiser_noise_scale,
+                )
+                gen_start = time.time()
+                latent_sharded = p_generate(
+                    model_params=model_params_replicated, rng=device_rngs,
+                    z=z_sharded, t_steps=t_steps_sharded,
+                    cond_seq=None, cond_seq_mask=None,
+                )
+                latent_sharded.block_until_ready()
+                generation_time += time.time() - gen_start
+
+                dec_start = time.time()
+                t_final_sharded = t_steps_sharded[:, -1]
+                predicted_ids_sharded = p_decode_ids(
+                    z=latent_sharded, model_params=model_params_replicated,
+                    t_final_val=t_final_sharded,
+                )
+                predicted_ids_sharded.block_until_ready()
+                decode_time += time.time() - dec_start
 
             predicted_ids = predicted_ids_sharded.reshape(-1, predicted_ids_sharded.shape[-1])
             predicted_ids = mask_after_eos(predicted_ids, eos_token_id=eos_token_id, pad_token_id=pad_token_id)

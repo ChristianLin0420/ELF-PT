@@ -11,6 +11,7 @@ from utils.sampling_utils import (
     restore_cond, _ode_step, _sde_step, get_sampling_steps,
 )
 from modules.t5_encoder import get_encoder
+from utils.thought_mask_utils import build_thought_masks
 
 PRNGKey = jax.random.PRNGKey
 
@@ -229,5 +230,162 @@ def _setup_generation(state, config, batch_size, header):
     log_for_0(f"Per-device batch size: {per_device_batch}, effective batch size: {effective_batch_size}")
 
     return state_unreplicated, model_apply_fn, model_params_replicated, d_model, num_local_devices, effective_batch_size
+
+
+# ============================================
+# K-thought generation helpers
+# ============================================
+
+def _shard_thought_noise(device_rngs, num_local_devices, per_device, K, max_length,
+                         d_model, noise_scale):
+    """Return sharded (num_devices, per_device, K*max_length, d_model) noise."""
+    return jnp.stack([
+        jax.random.normal(device_rngs[i], (per_device, K * max_length, d_model)) * noise_scale
+        for i in range(num_local_devices)
+    ])
+
+
+def _build_thought_masks_batch(B, L, K, cond_seq_mask=None):
+    """Build (intra_mask, inter_mask) for a batch of size B.
+
+    For unconditional generation (cond_seq_mask is None), all tokens are treated
+    as non-cond valid tokens.
+    """
+    if cond_seq_mask is not None:
+        is_cond = (cond_seq_mask > 0).astype(jnp.bool_)
+    else:
+        is_cond = jnp.zeros((B, L), dtype=jnp.bool_)
+    is_valid = jnp.ones((B, L), dtype=jnp.bool_)
+    return build_thought_masks(is_cond, is_valid, K)
+
+
+def _thought_generate_single_batch(
+    model_params, model_apply_fn, rng: PRNGKey, z: Array, t_steps: Array,
+    cond_seq: Array, cond_seq_mask: Array, config: Config, sampling_config: SamplingConfig,
+) -> Array:
+    """K-thought sampling loop for a single batch (pmap-compatible).
+
+    Args:
+        z: (B, K*L, D) initial noise.
+        t_steps: (n_steps+1,) time schedule.
+        cond_seq: (B, L, D) or None.
+        cond_seq_mask: (B, L) float in {0, 1} or None.
+
+    Returns:
+        z_final: (B, K*L, D).
+    """
+    from utils.thought_sampling_utils import (
+        thought_ode_step, thought_sde_step, apply_diversity_repulsion,
+    )
+
+    K = config.num_thoughts
+    method = sampling_config.sampling_method
+    sde_gamma = getattr(sampling_config, "sde_gamma", 0.0)
+    div_gamma = (
+        config.diversity_repulsion_gamma_max
+        if config.diversity_repulsion_inference else 0.0
+    )
+    div_sigma = config.diversity_repulsion_sigma
+    t_eps = config.t_eps
+    noise_scale = config.denoiser_noise_scale
+
+    B = z.shape[0]
+    L = z.shape[1] // K
+
+    # Build attention masks once — constant across steps
+    intra_mask, inter_mask = _build_thought_masks_batch(
+        B, L, K, cond_seq_mask=cond_seq_mask,
+    )
+
+    # Replicate cond tokens K times and restore them into z
+    if cond_seq is not None:
+        cond_seq_kl = jnp.tile(cond_seq, (1, K, 1))       # (B, K*L, D)
+        cond_mask_kl = jnp.tile(cond_seq_mask, (1, K))    # (B, K*L)
+        z = restore_cond(z, cond_seq_kl, cond_mask_kl[..., None])
+
+    # Build a fake TrainState-like carrier so thought_ode/sde_step can call apply_fn
+    class _FakeState:
+        def __init__(self, apply_fn, params):
+            self.apply_fn = apply_fn
+            self.params = params
+
+    state = _FakeState(model_apply_fn, model_params)
+
+    t_pairs = jnp.stack([t_steps[:-2], t_steps[1:-1]], axis=1)  # (n_steps-1, 2)
+    n_inner = t_pairs.shape[0]
+
+    def ode_step_fn(carry, t_pair):
+        z_c = carry
+        t, t_next = t_pair
+        z_new = thought_ode_step(state, z_c, t, t_next, intra_mask, inter_mask, t_eps)
+        if div_gamma > 0:
+            z_new = apply_diversity_repulsion(z_new, K, div_gamma, div_sigma)
+        return z_new, None
+
+    def sde_step_fn(carry, t_pair):
+        z_c, step_idx = carry
+        t, t_next = t_pair
+        step_rng = jax.random.fold_in(rng, step_idx)
+        z_new = thought_sde_step(
+            step_rng, state, z_c, t, t_next, intra_mask, inter_mask,
+            gamma=sde_gamma, K=K, noise_scale=noise_scale, t_eps=t_eps,
+        )
+        if div_gamma > 0:
+            z_new = apply_diversity_repulsion(z_new, K, div_gamma, div_sigma)
+        return (z_new, step_idx + 1), None
+
+    if method == "sde":
+        (z, _), _ = jax.lax.scan(sde_step_fn, (z, jnp.int32(0)), t_pairs)
+    else:
+        z, _ = jax.lax.scan(ode_step_fn, z, t_pairs)
+
+    # Final ODE step (always ODE, as in the K=1 path)
+    z = thought_ode_step(state, z, t_steps[-2], t_steps[-1], intra_mask, inter_mask, t_eps)
+    return z
+
+
+def _thought_decode_batch(z, model_params, model_apply_fn, t_final_val, config):
+    """Decode K-thought latent z → token ids (B, L).
+
+    Uses return_pre_unembed=True path: model aggregates K thoughts internally,
+    then we apply the factored unembed head.
+    """
+    from utils.thought_sampling_utils import thought_final_decode
+
+    K = config.num_thoughts
+    B = z.shape[0]
+    L = z.shape[1] // K
+
+    # Build masks (unconditional: no cond tokens)
+    intra_mask, inter_mask = _build_thought_masks_batch(B, L, K, cond_seq_mask=None)
+
+    class _FakeState:
+        def __init__(self, apply_fn, params):
+            self.apply_fn = apply_fn
+            self.params = params
+
+    state = _FakeState(model_apply_fn, model_params)
+    return thought_final_decode(state, z, intra_mask, inter_mask)
+
+
+def _make_thought_pmap_pair(model_apply_fn, config, sampling_config):
+    """Build pmapped (generate, decode) pair for K-thought sampling."""
+    p_generate = jax.pmap(
+        partial(
+            _thought_generate_single_batch,
+            model_apply_fn=model_apply_fn,
+            config=config,
+            sampling_config=sampling_config,
+        ),
+        axis_name="batch",
+    )
+    p_decode_ids = jax.pmap(
+        partial(
+            _thought_decode_batch,
+            model_apply_fn=model_apply_fn,
+            config=config,
+        )
+    )
+    return p_generate, p_decode_ids
 
 
