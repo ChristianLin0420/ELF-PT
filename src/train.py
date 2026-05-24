@@ -45,9 +45,12 @@ from modules.model import ELF_models
 from utils.data_utils import get_dataloader, prepare_batch, load_dataset, get_pad_token_id
 
 
-def _import_train_step(num_thoughts):
-    """Route to the K-thought train step when num_thoughts > 1."""
-    if num_thoughts > 1:
+def _import_train_step(num_thoughts, num_reasoning_thoughts=0):
+    """Route to the appropriate train step based on model configuration."""
+    if num_reasoning_thoughts > 0:
+        import importlib
+        return importlib.import_module('thought_train_step_r').train_step
+    elif num_thoughts > 1:
         import importlib
         return importlib.import_module('thought_train_step').train_step
     from train_step import train_step as _ts
@@ -154,7 +157,7 @@ def run_training(config):
         from modules.parallel_thought import ELF_PT_models
         from utils.thought_mask_utils import build_thought_masks
         model_fn = ELF_PT_models[config.model]
-        model = model_fn(
+        model_kwargs = dict(
             text_encoder_dim=encoder_config.d_model, max_length=max_length,
             attn_drop=config.attn_dropout, proj_drop=config.proj_dropout,
             num_time_tokens=config.num_time_tokens,
@@ -166,6 +169,9 @@ def run_training(config):
             block_pattern=config.thought_block_pattern,
             aggregation=config.thought_aggregation,
         )
+        if config.num_reasoning_thoughts > 0:
+            model_kwargs['num_reasoning_thoughts'] = config.num_reasoning_thoughts
+        model = model_fn(**model_kwargs)
         K = config.num_thoughts
         dummy_x = jnp.ones((1, K * max_length, input_dim))
         dummy_t = jnp.ones((1,))
@@ -287,7 +293,7 @@ def run_training(config):
             log_for_0("Continuing training from scratch")
 
     state = jax_utils.replicate(state)
-    _train_step_fn = _import_train_step(config.num_thoughts)
+    _train_step_fn = _import_train_step(config.num_thoughts, config.num_reasoning_thoughts)
     p_train_step = jax.pmap(
         partial(_train_step_fn, encoder_apply_fn=encoder_model.apply, config=config),
         axis_name="batch", donate_argnums=(0,),

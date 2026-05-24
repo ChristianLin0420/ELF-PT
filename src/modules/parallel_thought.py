@@ -186,6 +186,9 @@ class ELF_PT(ELF):
         if self.num_reasoning_thoughts > 0:
             K_total = self.num_reasoning_thoughts + 1
             L_slot = x.shape[1] // K_total
+            # Sow full pre-final hidden states for diversity loss in the train step.
+            # x has shape (B, K_total * L_slot, hidden_size) at this point.
+            self.sow('intermediates', 'hidden_pre_final_full', x)
             if return_pre_unembed:
                 # Return the answer slot's hidden states before FinalLayer/unembed.
                 return x[:, -L_slot:, :], None

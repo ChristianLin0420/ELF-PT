@@ -154,3 +154,24 @@ def test_elf_pt_r_pre_unembed_returns_answer_slot_only():
     out, _ = model.apply(params, x, t, intra_mask=intra, inter_mask=inter, return_pre_unembed=True)
     # In R-mode with return_pre_unembed=True, shape is (B, L, hidden_size=768)
     assert out.shape == (B, L, 768)
+
+
+def test_elf_pt_r_sow_hidden_pre_final():
+    """In R-mode, the model sows 'hidden_pre_final_full' as an intermediate of full K_total*L length."""
+    cls = ELF_PT_models['ELF-PT-B']
+    K_r = 2
+    K_total = K_r + 1
+    L = 32
+    model = cls(text_encoder_dim=512, max_length=L, num_thoughts=K_total,
+                num_reasoning_thoughts=K_r, block_pattern="intra,inter", vocab_size=32100)
+    B, S = 1, K_total * L
+    x = jnp.ones((B, S, 512)); t = jnp.ones((B,))
+    intra = jnp.ones((B, S, S), dtype=jnp.bool_); inter = jnp.ones((B, S, S), dtype=jnp.bool_)
+    rng = jax.random.PRNGKey(0)
+    params = model.init(rng, x, t, intra_mask=intra, inter_mask=inter)
+    out, sow_state = model.apply(
+        params, x, t, intra_mask=intra, inter_mask=inter,
+        mutable=['intermediates'],
+    )
+    h_full = sow_state['intermediates']['hidden_pre_final_full'][0]
+    assert h_full.shape == (B, S, 768)
