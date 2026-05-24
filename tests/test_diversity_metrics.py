@@ -53,3 +53,53 @@ def test_oracle_pass_at_k_validates_input():
     import pytest
     with pytest.raises(ValueError):
         oracle_pass_at_k(preds, refs, lambda p, r: 1.0, K=3)
+
+
+from utils.diversity_metrics import reasoning_diversity_loss
+
+
+def test_reasoning_diversity_loss_zero_when_orthogonal():
+    # Two reasoning thoughts in orthogonal directions; one answer (ignored)
+    # Shape: (B=1, K_total=3, L=1, D=4)
+    r1 = jnp.zeros((1, 1, 1, 4)).at[..., 0].set(1.0)
+    r2 = jnp.zeros((1, 1, 1, 4)).at[..., 1].set(1.0)
+    answer = jnp.zeros((1, 1, 1, 4))
+    h = jnp.concatenate([r1, r2, answer], axis=1)
+    loss = reasoning_diversity_loss(h, K_reasoning=2)
+    assert float(loss) < 1e-6
+
+
+def test_reasoning_diversity_loss_max_when_identical():
+    # Two identical reasoning thoughts → cosine sim = 1 → loss = 1
+    r1 = jnp.ones((1, 1, 1, 4))
+    r2 = jnp.ones((1, 1, 1, 4))
+    answer = jnp.zeros((1, 1, 1, 4))
+    h = jnp.concatenate([r1, r2, answer], axis=1)
+    loss = reasoning_diversity_loss(h, K_reasoning=2)
+    assert abs(float(loss) - 1.0) < 1e-5
+
+
+def test_reasoning_diversity_loss_t_gating_peak_at_half():
+    # Identical reasoning thoughts (max loss)
+    r1 = jnp.ones((2, 1, 1, 4))
+    r2 = jnp.ones((2, 1, 1, 4))
+    answer = jnp.zeros((2, 1, 1, 4))
+    h = jnp.concatenate([r1, r2, answer], axis=1)
+    # t=0.5 → gate=1.0 (full loss); t=0 → gate=0; t=1 → gate=0
+    loss_mid = reasoning_diversity_loss(h, K_reasoning=2, t_gating=jnp.array([0.5, 0.5]))
+    loss_edge_low = reasoning_diversity_loss(h, K_reasoning=2, t_gating=jnp.array([0.0, 0.0]))
+    loss_edge_high = reasoning_diversity_loss(h, K_reasoning=2, t_gating=jnp.array([1.0, 1.0]))
+    assert float(loss_mid) > float(loss_edge_low) + 0.5
+    assert float(loss_mid) > float(loss_edge_high) + 0.5
+    # Without t_gating, identical thoughts → loss exactly 1.0
+    loss_no_gate = reasoning_diversity_loss(h, K_reasoning=2, t_gating=None)
+    assert abs(float(loss_no_gate) - 1.0) < 1e-5
+
+
+def test_reasoning_diversity_loss_kreasoning_one_returns_zero():
+    """With only 1 reasoning thought, there are no pairs to compare."""
+    r1 = jnp.ones((1, 1, 1, 4))
+    answer = jnp.zeros((1, 1, 1, 4))
+    h = jnp.concatenate([r1, answer], axis=1)
+    loss = reasoning_diversity_loss(h, K_reasoning=1)
+    assert float(loss) == 0.0
