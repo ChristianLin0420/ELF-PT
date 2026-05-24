@@ -106,3 +106,51 @@ def test_elf_pt_return_pre_unembed():
     # After aggregation across K=2 thoughts, output shape is (B, L_per, hidden_size).
     assert out.shape == (B, L_per, 768)   # hidden_size of ELF-PT-B is 768
     assert second is None
+
+
+def test_elf_pt_r_returns_answer_slot_only():
+    """In R-mode (num_reasoning_thoughts > 0), the model output spans only the answer slot."""
+    cls = ELF_PT_models['ELF-PT-B']
+    K_r = 2
+    K_total = K_r + 1
+    L = 32
+    model = cls(
+        text_encoder_dim=512, max_length=L,
+        num_thoughts=K_total, num_reasoning_thoughts=K_r,
+        block_pattern="intra,inter", vocab_size=32100,
+    )
+    B = 1
+    S = K_total * L
+    x = jnp.ones((B, S, 512))
+    t = jnp.ones((B,))
+    intra = jnp.ones((B, S, S), dtype=jnp.bool_)
+    inter = jnp.ones((B, S, S), dtype=jnp.bool_)
+    rng = jax.random.PRNGKey(0)
+    params = model.init(rng, x, t, intra_mask=intra, inter_mask=inter)
+    out, second = model.apply(params, x, t, intra_mask=intra, inter_mask=inter)
+    # In R-mode the model returns only the answer slot, shape (B, L, text_encoder_dim).
+    assert out.shape == (B, L, 512), f"expected (B={B}, L={L}, D=512), got {out.shape}"
+    assert second is None
+
+
+def test_elf_pt_r_pre_unembed_returns_answer_slot_only():
+    cls = ELF_PT_models['ELF-PT-B']
+    K_r = 2
+    K_total = K_r + 1
+    L = 32
+    model = cls(
+        text_encoder_dim=512, max_length=L,
+        num_thoughts=K_total, num_reasoning_thoughts=K_r,
+        block_pattern="intra,inter", vocab_size=32100,
+    )
+    B = 1
+    S = K_total * L
+    x = jnp.ones((B, S, 512))
+    t = jnp.ones((B,))
+    intra = jnp.ones((B, S, S), dtype=jnp.bool_)
+    inter = jnp.ones((B, S, S), dtype=jnp.bool_)
+    rng = jax.random.PRNGKey(0)
+    params = model.init(rng, x, t, intra_mask=intra, inter_mask=inter)
+    out, _ = model.apply(params, x, t, intra_mask=intra, inter_mask=inter, return_pre_unembed=True)
+    # In R-mode with return_pre_unembed=True, shape is (B, L, hidden_size=768)
+    assert out.shape == (B, L, 768)

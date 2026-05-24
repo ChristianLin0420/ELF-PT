@@ -60,6 +60,7 @@ class ELF_PT(ELF):
     num_thoughts: int = 1
     block_pattern: str = "intra,inter"
     aggregation: str = "mean"
+    num_reasoning_thoughts: int = 0
 
     def _select_block_cls(self, i):
         pat = [s.strip() for s in self.block_pattern.split(',')]
@@ -179,6 +180,17 @@ class ELF_PT(ELF):
         # Always run FinalLayer so its params are registered during init, even in
         # pre-unembed mode.  Store result but only return it when not pre-unembed.
         output = FinalLayer(self.hidden_size, patch_size, self.text_encoder_dim, name='final_layer')(x)
+
+        # R-mode: num_reasoning_thoughts > 0.  Bypass aggregator; expose only the
+        # answer slot (last L positions of the K_total * L sequence).
+        if self.num_reasoning_thoughts > 0:
+            K_total = self.num_reasoning_thoughts + 1
+            L_slot = x.shape[1] // K_total
+            if return_pre_unembed:
+                # Return the answer slot's hidden states before FinalLayer/unembed.
+                return x[:, -L_slot:, :], None
+            # Denoiser branch: FinalLayer already ran on the full sequence; slice answer slot.
+            return output[:, -L_slot:, :], None
 
         # Pre-unembed return path: aggregate K thoughts internally then return (B, L, hidden_size).
         if return_pre_unembed:
