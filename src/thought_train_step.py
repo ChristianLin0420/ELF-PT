@@ -24,11 +24,10 @@ import jax.numpy as jnp
 from utils.train_utils import TrainState
 from utils.encoder_utils import encode_text
 from utils.sampling_utils import (
-    sample_cfg_scale, add_noise, sample_timesteps,
+    sample_cfg_scale, sample_timesteps,
     net_out_to_v_x, restore_cond,
 )
 from utils.thought_mask_utils import build_thought_masks
-from modules.thought_aggregation import get_aggregator
 
 
 Array = jnp.ndarray
@@ -55,9 +54,9 @@ def train_step(
     current_step_rng = jax.random.fold_in(current_step_rng, jax.lax.axis_index(axis_name="batch"))
     (
         t_rng, noise_rng, self_cond_mask_rng, self_cond_cfg_rng,
-        model_dropout_rng, decoder_step_rng, decoder_rng,
+        model_dropout_rng, decoder_step_rng,
         decoder_lambda_rng, decoder_noise_rng,
-    ) = jax.random.split(current_step_rng, 9)
+    ) = jax.random.split(current_step_rng, 8)
 
     # encoder_attention_mask: cond sees cond, x sees all
     encoder_attention_mask = batch["encoder_attention_mask"]
@@ -238,7 +237,7 @@ def train_step(
         # Restore cond tokens per-thought then flatten
         x_pred_per = jnp.where(cond_mask_exp > 0, x0_per, x_pred_per)
         x_pred_flat = x_pred_per.reshape(batch_size, K * seq_length, -1)
-        x_pred_cond = x_pred_flat * jnp.tile(use_self_cond_mask, (1, K, 1)).astype(z_flat.dtype)
+        x_pred_cond = x_pred_flat * use_self_cond_mask.astype(z_flat.dtype)
         x_pred_cond = jnp.where(
             jnp.tile(cond_seq_mask, (1, K, 1)) > 0, x_tokens_flat, x_pred_cond
         )
@@ -292,8 +291,7 @@ def train_step(
         )
         sc_w = self_cond_cfg_scale.reshape(batch_size, 1, 1)
         sc_guidance_flat = (1 - 1 / sc_w) * (v_cond_flat - v_uncond_flat)
-        use_sc_tiled = jnp.tile(use_self_cond_mask, (1, K, 1))
-        sc_guidance_flat = jnp.where(use_sc_tiled, sc_guidance_flat, jnp.zeros_like(sc_guidance_flat))
+        sc_guidance_flat = jnp.where(use_self_cond_mask, sc_guidance_flat, jnp.zeros_like(sc_guidance_flat))
         # Reshape guidance to per-thought and add to per-thought target
         sc_guidance_per = sc_guidance_flat.reshape(batch_size, K, seq_length, -1)
         return jax.lax.stop_gradient(base_v_target_per + sc_guidance_per)
@@ -313,13 +311,13 @@ def train_step(
 
         def _decoder_branch(_):
             # Decoder mode: encoder-noised latents (decoder_z_per → decoder_z) at t=1,
-            # CE loss on tokens. Aggregate K pre-unembed hidden states before unembed.
+            # CE loss on tokens. Model aggregates K thoughts internally and returns (B, L, H).
             decoder_t = jnp.ones((batch_size,))
             decoder_input = (
                 jnp.concatenate([decoder_z, jnp.zeros_like(decoder_z)], axis=-1)
                 if config.self_cond_prob > 0 else decoder_z
             )
-            x_pre_kl, _ = state.apply_fn(
+            x_agg, _ = state.apply_fn(
                 {"params": params}, decoder_input, decoder_t,
                 intra_mask=intra_mask_kk, inter_mask=inter_mask_kk,
                 deterministic=False,
@@ -328,15 +326,7 @@ def train_step(
                 decoder_step_active=jnp.array(True),
                 return_pre_unembed=True,
             )
-            # x_pre_kl: (B, K*L, hidden_size)
-            x_pre_per = x_pre_kl.reshape(batch_size, K, seq_length, -1)
-            aggregator = get_aggregator(config)
-            if config.thought_aggregation == 'mean':
-                x_agg = aggregator.apply({}, x_pre_per)
-            else:
-                # Learned aggregator needs params; access via 'aggregator' subkey if present
-                agg_params = params.get('aggregator', {})
-                x_agg = aggregator.apply({'params': agg_params}, x_pre_per)
+            # x_agg: (B, L, hidden_size) — already aggregated by the model
             # Apply shared decoder unembed kernel (same params as the model's unembed)
             proj_kernel = params['proj_kernel']
             proj_bias = params['proj_bias']

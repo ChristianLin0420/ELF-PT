@@ -164,6 +164,7 @@ def run_training(config):
             bottleneck_dim=config.bottleneck_dim,
             num_thoughts=config.num_thoughts,
             block_pattern=config.thought_block_pattern,
+            aggregation=config.thought_aggregation,
         )
         K = config.num_thoughts
         dummy_x = jnp.ones((1, K * max_length, input_dim))

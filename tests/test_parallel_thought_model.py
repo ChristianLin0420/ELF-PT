@@ -103,5 +103,6 @@ def test_elf_pt_return_pre_unembed():
     rng = jax.random.PRNGKey(0)
     params = model.init(rng, x, t, intra_mask=mask, inter_mask=mask)
     out, second = model.apply(params, x, t, intra_mask=mask, inter_mask=mask, return_pre_unembed=True)
-    assert out.shape == (B, S, 768)   # hidden_size of ELF-PT-B is 768
+    # After aggregation across K=2 thoughts, output shape is (B, L_per, hidden_size).
+    assert out.shape == (B, L_per, 768)   # hidden_size of ELF-PT-B is 768
     assert second is None

@@ -59,6 +59,7 @@ class ELF_PT(ELF):
     """
     num_thoughts: int = 1
     block_pattern: str = "intra,inter"
+    aggregation: str = "mean"
 
     def _select_block_cls(self, i):
         pat = [s.strip() for s in self.block_pattern.split(',')]
@@ -81,10 +82,10 @@ class ELF_PT(ELF):
         Note: callers must encode padding/conditioning constraints directly into intra_mask
         and inter_mask. ELF's single-mask attention_mask parameter is not supported here.
 
-        When return_pre_unembed=True, returns (x_pre_unembed, None) where
-        x_pre_unembed has shape (B, K*L, hidden_size). The caller is responsible
-        for aggregating across K thoughts and applying the unembed kernel.
-        The FinalLayer and decoder unembed path are skipped entirely.
+        When return_pre_unembed=True, returns (x_agg, None) where x_agg has
+        shape (B, L, hidden_size) after aggregating across K thoughts.
+        FinalLayer is always constructed to keep its params registered; its
+        output is discarded in the return_pre_unembed path.
         """
         patch_size = 1
         head_dim = self.hidden_size // self.num_heads
@@ -179,9 +180,20 @@ class ELF_PT(ELF):
         # pre-unembed mode.  Store result but only return it when not pre-unembed.
         output = FinalLayer(self.hidden_size, patch_size, self.text_encoder_dim, name='final_layer')(x)
 
-        # Pre-unembed return path: caller aggregates K thoughts and applies unembed itself.
-        # x shape: (B, K*L, hidden_size).
+        # Pre-unembed return path: aggregate K thoughts internally then return (B, L, hidden_size).
         if return_pre_unembed:
+            if self.num_thoughts > 1:
+                from modules.thought_aggregation import MeanPoolAggregator, LearnedWeightAggregator
+                B_, S, H = x.shape
+                L = S // self.num_thoughts
+                x_per = x.reshape(B_, self.num_thoughts, L, H)
+                if self.aggregation == 'mean':
+                    agg = MeanPoolAggregator(name='aggregator')
+                elif self.aggregation == 'learned':
+                    agg = LearnedWeightAggregator(name='aggregator')
+                else:
+                    raise ValueError(f"unknown aggregation: {self.aggregation!r}")
+                x = agg(x_per)  # (B, L, H)
             return x, None
 
         decoder_logits = None
