@@ -1,0 +1,59 @@
+# K=2 WMT14 De-En run for ELF-PT. Tuned for single A100 80GB, 8-hour budget.
+
+data_path: "embedded-language-flows/wmt14_de-en_train_t5"
+eval_data_path: "embedded-language-flows/wmt14_de-en_validation_t5"
+
+encoder_model_name: t5-small
+encoder_checkpoint: "embedded-language-flows/t5_small_encoder_jax/t5_small_encoder_jax.pkl"
+latent_mean: 0.0
+latent_std: 0.2
+
+model: ELF-PT-B
+num_thoughts: 2
+thought_block_pattern: "intra,inter"
+thought_aggregation: mean
+inter_block_zero_init: true
+
+bottleneck_dim: 128
+num_time_tokens: 4
+num_self_cond_cfg_tokens: 4
+num_model_mode_tokens: 4
+
+max_length: 128
+
+denoiser_p_mean: -1.5
+denoiser_p_std: 0.8
+denoiser_noise_scale: 2.0
+t_eps: 0.05
+time_schedule: "logit_normal"
+
+decoder_prob: 0.2
+decoder_noise_scale: 5.0
+decoder_p_mean: 0.8
+decoder_p_std: 0.8
+self_cond_prob: 0.5
+
+# Push batch to use more A100 memory. K=2 doubles sequence length so K*L = 256
+# per element at max_length=128. With batch 256 we expect ~50-60 GB used.
+epochs: 1
+global_batch_size: 256
+grad_accum_steps: 1
+blr: 0.001
+warmup_steps: 500
+optimizer: muon
+
+ema_decay1: 0.9999
+
+sampling_configs_path: "configs/sampling_configs/cond_sampling_configs.yml"
+num_samples: 8
+
+log_freq: 50
+save_freq: 0.1   # save every 10% epoch so we keep progress if the run is cut short
+eval_freq: 9999  # never trigger online_eval mid-loop
+
+output_dir: outputs/pt_k2_wmt14
+online_eval: false
+use_wandb: true
+wandb_project: elf-pt
+wandb_entity: crlc112358
+wandb_run_name: pt_k2_wmt14_bs256
