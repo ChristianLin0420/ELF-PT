@@ -53,6 +53,15 @@ class Config:
     attn_dropout: float = 0.0
     proj_dropout: float = 0.0
 
+    # Parallel-thought (ELF-PT)
+    num_thoughts: int = 1                          # K. 1 = vanilla ELF.
+    thought_block_pattern: str = "intra,inter"     # repeating unit; depth must be divisible by len(pattern.split(','))
+    thought_aggregation: str = "mean"              # "mean" | "learned"
+    inter_block_zero_init: bool = True             # init out_proj/w3 to zero for stability
+    diversity_repulsion_inference: bool = False
+    diversity_repulsion_gamma_max: float = 0.5
+    diversity_repulsion_sigma: float = 1.0
+
     # Denoiser objective
     denoiser_p_mean: float = 0.8
     denoiser_p_std: float = 0.8
