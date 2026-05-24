@@ -1,6 +1,6 @@
 import math
 from functools import partial
-from typing import Optional
+from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
@@ -158,6 +158,7 @@ class Attention(nn.Module):
     qk_norm: bool = True
     attn_drop: float = 0.0
     proj_drop: float = 0.0
+    out_kernel_init: Any = DEFAULT_KERNEL_INIT
 
     @nn.compact
     def __call__(self, x, rope_fn, attention_mask=None, deterministic=True):
@@ -179,7 +180,7 @@ class Attention(nn.Module):
             k = rope_fn(k)
         x = scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
         x = x.transpose(0, 2, 1, 3).reshape(B, N, C)
-        x = nn.Dense(self.dim, kernel_init=DEFAULT_KERNEL_INIT, bias_init=DEFAULT_BIAS_INIT, name='proj')(x)
+        x = nn.Dense(self.dim, kernel_init=self.out_kernel_init, bias_init=DEFAULT_BIAS_INIT, name='proj')(x)
         return nn.Dropout(rate=self.proj_drop, deterministic=deterministic)(x)
 
 
@@ -189,6 +190,7 @@ class SwiGLUFFN(nn.Module):
     hidden_dim: int
     drop: float = 0.0
     bias: bool = True
+    out_kernel_init: Any = DEFAULT_KERNEL_INIT
 
     @nn.compact
     def __call__(self, x, deterministic=True):
@@ -198,7 +200,7 @@ class SwiGLUFFN(nn.Module):
         x12 = dense(2 * hidden_dim, name='w12')(x)
         x1, x2 = jnp.split(x12, 2, axis=-1)
         hidden = nn.Dropout(rate=self.drop, deterministic=deterministic)(nn.silu(x1) * x2)
-        return dense(self.dim, name='w3')(hidden)
+        return nn.Dense(self.dim, use_bias=self.bias, kernel_init=self.out_kernel_init, bias_init=bias_init, name='w3')(hidden)
 
 
 class FinalLayer(nn.Module):
