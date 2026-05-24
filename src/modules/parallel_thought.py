@@ -71,11 +71,15 @@ class ELF_PT(ELF):
 
     @nn.compact
     def __call__(
-        self, x, t, intra_mask=None, inter_mask=None, attention_mask=None,
+        self, x, t, intra_mask=None, inter_mask=None,
         deterministic=True, self_cond_cfg_scale=None, decoder_step_active=None,
     ):
         """x: (B, K*L, C). t: (B,).
-        intra_mask/inter_mask: (B, K*L, K*L), 1=attend 0=masked."""
+        intra_mask/inter_mask: (B, K*L, K*L), 1=attend 0=masked.
+
+        Note: callers must encode padding/conditioning constraints directly into intra_mask
+        and inter_mask. ELF's single-mask attention_mask parameter is not supported here.
+        """
         patch_size = 1
         head_dim = self.hidden_size // self.num_heads
         B = x.shape[0]
