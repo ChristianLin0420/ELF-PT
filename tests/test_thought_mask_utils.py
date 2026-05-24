@@ -26,6 +26,16 @@ def test_cond_tokens_visible_to_all_groups_in_intra_mask():
 def test_padding_zeroed():
     is_cond = jnp.zeros((1, 4), dtype=jnp.bool_)
     is_valid = jnp.array([[1, 1, 0, 0]], dtype=jnp.bool_)  # last 2 padded
-    _, inter = build_thought_masks(is_cond, is_valid, K=2)
+    intra, inter = build_thought_masks(is_cond, is_valid, K=2)
     assert int(inter[0, 0, 2]) == 0       # padded key never attended to
     assert int(inter[0, 0, 6]) == 0       # padded key in group 1
+    assert int(intra[0, 0, 2]) == 0       # intra: padded key in group 0 zeroed
+    assert int(intra[0, 0, 6]) == 0       # intra: padded key in group 1 zeroed
+
+
+def test_k1_intra_equals_inter():
+    is_cond = jnp.array([[1, 1, 0, 0]], dtype=jnp.bool_)
+    is_valid = jnp.array([[1, 1, 1, 0]], dtype=jnp.bool_)
+    intra, inter = build_thought_masks(is_cond, is_valid, K=1)
+    assert jnp.all(intra == inter)
+    assert intra.shape == (1, 4, 4)
