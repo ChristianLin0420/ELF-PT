@@ -55,12 +55,12 @@ class Config:
 
     # Parallel-thought (ELF-PT)
     num_thoughts: int = 1                          # K. 1 = vanilla ELF.
-    thought_block_pattern: str = "intra,inter"     # repeating unit; depth must be divisible by len(pattern.split(','))
+    thought_block_pattern: str = "intra,inter"     # repeating unit; model depth must be divisible by len(pattern.split(','))
     thought_aggregation: str = "mean"              # "mean" | "learned"
-    inter_block_zero_init: bool = True             # init out_proj/w3 to zero for stability
+    inter_block_zero_init: bool = True             # zero-init output projections of attention and FFN (identity at init)
     diversity_repulsion_inference: bool = False
-    diversity_repulsion_gamma_max: float = 0.5
-    diversity_repulsion_sigma: float = 1.0
+    diversity_repulsion_gamma_max: float = 0.5     # peak repulsion step size (LaDiR γ)
+    diversity_repulsion_sigma: float = 1.0         # RBF kernel bandwidth in latent space
 
     # Denoiser objective
     denoiser_p_mean: float = 0.8
