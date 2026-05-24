@@ -301,6 +301,12 @@ def test_generation_cond(
     batch_size: int = 64,
 ):
     """Test conditional generation (multi-device pmap)."""
+    if config.num_thoughts > 1:
+        raise NotImplementedError(
+            "Conditional K-thought generation is not yet supported. "
+            "Set num_thoughts=1 for conditional eval, or use the unconditional path. "
+            "Task 7 deferred this to a follow-up."
+        )
     sampling_method = sampling_config.sampling_method
     time_schedule = sampling_config.time_schedule
     log_for_0(f"Config: {sampling_config}")

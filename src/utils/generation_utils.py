@@ -1,4 +1,6 @@
+import dataclasses
 from functools import partial
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -14,6 +16,16 @@ from modules.t5_encoder import get_encoder
 from utils.thought_mask_utils import build_thought_masks
 
 PRNGKey = jax.random.PRNGKey
+
+
+@dataclasses.dataclass
+class _SamplingState:
+    """Lightweight TrainState surrogate for thought sampling under pmap.
+
+    Carries only apply_fn and params; avoids serializing the full optax/EMA
+    state through XLA boundaries."""
+    apply_fn: Any
+    params: Any
 
 
 # ============================================
@@ -238,9 +250,15 @@ def _setup_generation(state, config, batch_size, header):
 
 def _shard_thought_noise(device_rngs, num_local_devices, per_device, K, max_length,
                          d_model, noise_scale):
-    """Return sharded (num_devices, per_device, K*max_length, d_model) noise."""
+    """Return sharded (num_devices, per_device, K*max_length, d_model) noise.
+
+    Uses init_thought_state for the K-way RNG split required by the spec.
+    Each of the K thoughts receives an independently seeded noise draw rather
+    than a flat draw over the concatenated K*L sequence.
+    """
+    from utils.thought_sampling_utils import init_thought_state
     return jnp.stack([
-        jax.random.normal(device_rngs[i], (per_device, K * max_length, d_model)) * noise_scale
+        init_thought_state(device_rngs[i], per_device, K, max_length, d_model) * noise_scale
         for i in range(num_local_devices)
     ])
 
@@ -303,13 +321,8 @@ def _thought_generate_single_batch(
         cond_mask_kl = jnp.tile(cond_seq_mask, (1, K))    # (B, K*L)
         z = restore_cond(z, cond_seq_kl, cond_mask_kl[..., None])
 
-    # Build a fake TrainState-like carrier so thought_ode/sde_step can call apply_fn
-    class _FakeState:
-        def __init__(self, apply_fn, params):
-            self.apply_fn = apply_fn
-            self.params = params
-
-    state = _FakeState(model_apply_fn, model_params)
+    # Build a lightweight TrainState surrogate so thought_ode/sde_step can call apply_fn
+    state = _SamplingState(apply_fn=model_apply_fn, params=model_params)
 
     t_pairs = jnp.stack([t_steps[:-2], t_steps[1:-1]], axis=1)  # (n_steps-1, 2)
     n_inner = t_pairs.shape[0]
@@ -359,13 +372,8 @@ def _thought_decode_batch(z, model_params, model_apply_fn, t_final_val, config):
     # Build masks (unconditional: no cond tokens)
     intra_mask, inter_mask = _build_thought_masks_batch(B, L, K, cond_seq_mask=None)
 
-    class _FakeState:
-        def __init__(self, apply_fn, params):
-            self.apply_fn = apply_fn
-            self.params = params
-
-    state = _FakeState(model_apply_fn, model_params)
-    return thought_final_decode(state, z, intra_mask, inter_mask)
+    state = _SamplingState(apply_fn=model_apply_fn, params=model_params)
+    return thought_final_decode(state, z, intra_mask, inter_mask, t_final=jnp.full((B,), t_final_val))
 
 
 def _make_thought_pmap_pair(model_apply_fn, config, sampling_config):

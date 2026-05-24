@@ -174,7 +174,7 @@ def apply_diversity_repulsion(z_kl, K, gamma, sigma):
 # Final decode
 # ============================================
 
-def thought_final_decode(state, z_kl, intra_mask, inter_mask, **mk):
+def thought_final_decode(state, z_kl, intra_mask, inter_mask, t_final=None, **mk):
     """Final decode at t=1: aggregate K thoughts and return token ids.
 
     Calls model with return_pre_unembed=True so the model aggregates K thoughts
@@ -187,13 +187,17 @@ def thought_final_decode(state, z_kl, intra_mask, inter_mask, **mk):
         z_kl:       (B, K*L, D) final latent.
         intra_mask: (B, K*L, K*L) intra-group attention mask.
         inter_mask: (B, K*L, K*L) inter-group attention mask.
+        t_final:    (B,) final time values.  Defaults to jnp.ones((B,)) when
+                    None, which is correct for schedules that end at t=1.
+                    Pass an explicit value when the schedule ends at t != 1.
         **mk:       extra kwargs forwarded to model.
 
     Returns:
         token_ids: (B, L) int32 argmax token predictions.
     """
     B = z_kl.shape[0]
-    t_final = jnp.ones((B,), dtype=z_kl.dtype)
+    if t_final is None:
+        t_final = jnp.ones((B,), dtype=z_kl.dtype)
 
     x_agg, _ = state.apply_fn(
         {"params": state.params}, z_kl, t_final,
