@@ -27,10 +27,7 @@ def test_learned_weight_weights_sum_to_one_per_position():
     agg = LearnedWeightAggregator(hidden_dim=32)
     x = jax.random.normal(jax.random.PRNGKey(0), (1, 4, 8, 16))
     params = agg.init(jax.random.PRNGKey(1), x)
-    # Use capture_intermediates to access internal softmax weights:
     out, mutated = agg.apply(params, x, capture_intermediates=True)
-    # Walk the captured tree to find the weights tensor; pytest will fail if not present.
-    # Implementation hint: name the softmax output 'thought_weights' via self.sow('intermediates', 'thought_weights', w)
     weights = mutated['intermediates']['thought_weights'][0]   # (B, L, K, 1)
     sums = weights.sum(axis=2)
     assert jnp.allclose(sums, jnp.ones_like(sums), atol=1e-5)

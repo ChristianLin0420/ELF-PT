@@ -25,6 +25,9 @@ class LearnedWeightAggregator(nn.Module):
     def __call__(self, x):
         """x: (B, K, L, D) -> (B, L, D)."""
         B, K, L, D = x.shape
+        # std collapses to zero at K=1, leaving the std half of proj1 untrained.
+        # Callers should route to MeanPoolAggregator (or no aggregation) at K=1.
+        assert K >= 2, "LearnedWeightAggregator requires K >= 2; use MeanPoolAggregator at K=1"
         summary = jnp.concatenate([x.mean(axis=1), x.std(axis=1)], axis=-1)  # (B, L, 2D)
         h = nn.gelu(nn.Dense(self.hidden_dim, name='proj1')(summary))
         logits = nn.Dense(K, name='proj2')(h)                                 # (B, L, K)
