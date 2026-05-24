@@ -1,4 +1,4 @@
-# K=2 WMT14 De-En feasibility smoke run for ELF-PT.
+# K=2 WMT14 De-En run for ELF-PT. Tuned for single A100 80GB, 8-hour budget.
 
 data_path: "embedded-language-flows/wmt14_de-en_train_t5"
 eval_data_path: "embedded-language-flows/wmt14_de-en_validation_t5"
@@ -33,10 +33,13 @@ decoder_p_mean: 0.8
 decoder_p_std: 0.8
 self_cond_prob: 0.5
 
+# Aggressive batch to use more of A100. K=2 doubles sequence length so memory is
+# K*L = 256 tokens per element. ELF-B baseline used 512 effective batch.
 epochs: 1
-global_batch_size: 16
+global_batch_size: 256
+grad_accum_steps: 1
 blr: 0.001
-warmup_steps: 50
+warmup_steps: 200
 optimizer: muon
 
 ema_decay1: 0.9999
@@ -44,12 +47,13 @@ ema_decay1: 0.9999
 sampling_configs_path: "configs/sampling_configs/cond_sampling_configs.yml"
 num_samples: 8
 
-log_freq: 10
-save_freq: 9999
-eval_freq: 9999
+log_freq: 50
+save_freq: 0.1   # save every 10% of an epoch (~1700 steps at batch 256, WMT14 ~4.5M pairs)
+eval_freq: 9999  # never trigger online_eval in-loop
 
 output_dir: outputs/smoke_pt_k2
 online_eval: false
 use_wandb: true
 wandb_project: elf-pt
-wandb_run_name: smoke_pt_k2_wmt14_v2
+wandb_entity: crlc112358
+wandb_run_name: smoke_pt_k2_wmt14

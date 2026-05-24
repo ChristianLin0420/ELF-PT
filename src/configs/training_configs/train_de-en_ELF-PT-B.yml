@@ -34,9 +34,10 @@ decoder_p_std: 0.8
 self_cond_prob: 0.5
 
 # Push batch to use more A100 memory. K=2 doubles sequence length so K*L = 256
-# per element at max_length=128. With batch 256 we expect ~50-60 GB used.
+# per element at max_length=128. Empirically batch 256 OOM'd at 122 GB (likely
+# activations + grad + EMA + self-cond double-forward). Batch 96 lands ~50 GB.
 epochs: 1
-global_batch_size: 256
+global_batch_size: 96
 grad_accum_steps: 1
 blr: 0.001
 warmup_steps: 500
@@ -56,4 +57,4 @@ online_eval: false
 use_wandb: true
 wandb_project: elf-pt
 wandb_entity: crlc112358
-wandb_run_name: pt_k2_wmt14_bs256
+wandb_run_name: pt_k2_wmt14_bs96
