@@ -1,0 +1,61 @@
+# Ablation 06: ELF-PT-R K_reasoning=2, diversity loss DISABLED.
+# Pairs with 03 to isolate the diversity-loss effect at K_r=2 (where it actually fires).
+
+data_path: "embedded-language-flows/wmt14_de-en_train_t5"
+eval_data_path: "embedded-language-flows/wmt14_de-en_validation_t5"
+
+encoder_model_name: t5-small
+encoder_checkpoint: "embedded-language-flows/t5_small_encoder_jax/t5_small_encoder_jax.pkl"
+latent_mean: 0.0
+latent_std: 0.2
+
+model: ELF-PT-B
+num_thoughts: 3
+num_reasoning_thoughts: 2
+use_causal_inter_mask: true
+diversity_loss_weight: 0.0
+diversity_loss_t_gating: false
+thought_block_pattern: "intra,inter"
+thought_aggregation: mean
+inter_block_zero_init: true
+
+bottleneck_dim: 128
+num_time_tokens: 4
+num_self_cond_cfg_tokens: 4
+num_model_mode_tokens: 4
+max_length: 128
+
+denoiser_p_mean: -1.5
+denoiser_p_std: 0.8
+denoiser_noise_scale: 2.0
+t_eps: 0.05
+time_schedule: "logit_normal"
+
+decoder_prob: 0.2
+decoder_noise_scale: 5.0
+decoder_p_mean: 0.8
+decoder_p_std: 0.8
+self_cond_prob: 0.0
+
+epochs: 1
+global_batch_size: 48
+grad_accum_steps: 1
+blr: 0.001
+warmup_steps: 500
+optimizer: muon
+
+ema_decay1: 0.9999
+
+sampling_configs_path: "configs/sampling_configs/cond_sampling_configs.yml"
+num_samples: 8
+
+log_freq: 50
+save_freq: 9999
+eval_freq: 9999
+
+output_dir: outputs/ablation/06_pt_r_k2_nodiv
+online_eval: false
+use_wandb: true
+wandb_project: elf-pt
+wandb_entity: crlc112358
+wandb_run_name: ablation_06_pt_r_k2_nodiv
