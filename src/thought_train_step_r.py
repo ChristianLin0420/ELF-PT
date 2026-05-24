@@ -297,7 +297,7 @@ def train_step(
             )
             # In R-mode the model returns (B, L, D_enc) — only the answer slot.
             # We also need the intermediate hidden states for diversity loss.
-            net_out_answer, sow_state = state.apply_fn(
+            (net_out_velocity, _decoder_logits_unused), sow_state = state.apply_fn(
                 {"params": params}, denoiser_input, t_mean,
                 intra_mask=intra_mask_kk, inter_mask=inter_mask_kk,
                 deterministic=False,
@@ -306,10 +306,10 @@ def train_step(
                 decoder_step_active=jnp.array(False),
                 mutable=['intermediates'],
             )
-            # net_out_answer shape: (B, L, D_text_enc) — already sliced to answer in R-mode.
+            # net_out_velocity shape: (B, L, D_text_enc) — already sliced to answer in R-mode.
             # v_target_per: (B, K_total, L, D). We need only the answer slot.
             v_target_answer = v_target_per[:, -1, :, :]  # (B, L, D)
-            per_dim_loss = (net_out_answer - v_target_answer) ** 2
+            per_dim_loss = (net_out_velocity - v_target_answer) ** 2
             per_token_loss = jnp.mean(per_dim_loss, axis=-1)  # (B, L)
             l2_loss = reduce_token_loss(per_token_loss, loss_mask)
 
