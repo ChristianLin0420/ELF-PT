@@ -43,7 +43,15 @@ from generation import run_generation
 from configs.config import load_config_from_yaml, apply_config_overrides, load_sampling_configs, SamplingConfig
 from modules.model import ELF_models
 from utils.data_utils import get_dataloader, prepare_batch, load_dataset, get_pad_token_id
-from train_step import train_step
+
+
+def _import_train_step(num_thoughts):
+    """Route to the K-thought train step when num_thoughts > 1."""
+    if num_thoughts > 1:
+        import importlib
+        return importlib.import_module('thought_train_step').train_step
+    from train_step import train_step as _ts
+    return _ts
 
 
 # Logging: no timestamps; suppress noisy checkpoint loggers; unbuffered stdout
@@ -125,19 +133,14 @@ def run_training(config):
     log_for_0(f"Encoder d_model: {encoder_config.d_model}")
 
     # ============================================
-    # Create ELF Model
+    # Create ELF / ELF-PT Model
     # ============================================
     log_for_0(f"Creating {config.model} model...")
-    model_fn = ELF_models[config.model]
     rng, init_rng, dropout_rng = jax.random.split(rng, 3)
 
     # Dummy inputs for initialization (2x dim if self_cond_prob > 0 to init self_cond_proj layer)
     max_length = config.max_length
     input_dim = 2 * encoder_config.d_model if config.self_cond_prob > 0 else encoder_config.d_model
-    dummy_x = jnp.ones((1, max_length, input_dim))
-    dummy_t = jnp.ones((1,))
-    dummy_self_cond_cfg_scale = jnp.ones((1,)) if config.num_self_cond_cfg_tokens > 0 else None
-    log_for_0(f"Dummy shapes: x={dummy_x.shape}, t={dummy_t.shape}")
 
     # Use the full tokenizer length for CE heads; tokenizer.vocab_size can exclude
     # added special tokens that still appear in tokenized Qwen targets.
@@ -146,21 +149,55 @@ def run_training(config):
     except TypeError:
         vocab_size = tokenizer.vocab_size
     log_for_0(f"Tokenizer vocab: CE head={vocab_size}")
-    model = model_fn(
-        text_encoder_dim=encoder_config.d_model, max_length=max_length,
-        attn_drop=config.attn_dropout, proj_drop=config.proj_dropout,
-        num_time_tokens=config.num_time_tokens,
-        num_self_cond_cfg_tokens=config.num_self_cond_cfg_tokens,
-        vocab_size=vocab_size,
-        num_model_mode_tokens=config.num_model_mode_tokens,
-        bottleneck_dim=config.bottleneck_dim,
-    )
 
-    log_for_0("Initializing ELF model...")
-    init_args = dict(
-        x=dummy_x, t=dummy_t, deterministic=True,
-        self_cond_cfg_scale=dummy_self_cond_cfg_scale,
-    )
+    if config.num_thoughts > 1:
+        from modules.parallel_thought import ELF_PT_models
+        from utils.thought_mask_utils import build_thought_masks
+        model_fn = ELF_PT_models[config.model]
+        model = model_fn(
+            text_encoder_dim=encoder_config.d_model, max_length=max_length,
+            attn_drop=config.attn_dropout, proj_drop=config.proj_dropout,
+            num_time_tokens=config.num_time_tokens,
+            num_self_cond_cfg_tokens=config.num_self_cond_cfg_tokens,
+            vocab_size=vocab_size,
+            num_model_mode_tokens=config.num_model_mode_tokens,
+            bottleneck_dim=config.bottleneck_dim,
+            num_thoughts=config.num_thoughts,
+            block_pattern=config.thought_block_pattern,
+        )
+        K = config.num_thoughts
+        dummy_x = jnp.ones((1, K * max_length, input_dim))
+        dummy_t = jnp.ones((1,))
+        dummy_self_cond_cfg_scale = jnp.ones((1,)) if config.num_self_cond_cfg_tokens > 0 else None
+        dummy_mask = jnp.ones((1, K * max_length, K * max_length), dtype=jnp.bool_)
+        log_for_0(f"Dummy shapes (ELF-PT K={K}): x={dummy_x.shape}, t={dummy_t.shape}")
+        log_for_0("Initializing ELF-PT model...")
+        init_args = dict(
+            x=dummy_x, t=dummy_t, deterministic=True,
+            self_cond_cfg_scale=dummy_self_cond_cfg_scale,
+            intra_mask=dummy_mask, inter_mask=dummy_mask,
+        )
+    else:
+        model_fn = ELF_models[config.model]
+        model = model_fn(
+            text_encoder_dim=encoder_config.d_model, max_length=max_length,
+            attn_drop=config.attn_dropout, proj_drop=config.proj_dropout,
+            num_time_tokens=config.num_time_tokens,
+            num_self_cond_cfg_tokens=config.num_self_cond_cfg_tokens,
+            vocab_size=vocab_size,
+            num_model_mode_tokens=config.num_model_mode_tokens,
+            bottleneck_dim=config.bottleneck_dim,
+        )
+        dummy_x = jnp.ones((1, max_length, input_dim))
+        dummy_t = jnp.ones((1,))
+        dummy_self_cond_cfg_scale = jnp.ones((1,)) if config.num_self_cond_cfg_tokens > 0 else None
+        log_for_0(f"Dummy shapes: x={dummy_x.shape}, t={dummy_t.shape}")
+        log_for_0("Initializing ELF model...")
+        init_args = dict(
+            x=dummy_x, t=dummy_t, deterministic=True,
+            self_cond_cfg_scale=dummy_self_cond_cfg_scale,
+        )
+
     elf_params = model.init(init_rng, **init_args)
     log_for_0("\n" + model.tabulate(init_rng, **init_args))
     total_params = sum(x.size for x in jax.tree_util.tree_leaves(elf_params))
@@ -249,8 +286,9 @@ def run_training(config):
             log_for_0("Continuing training from scratch")
 
     state = jax_utils.replicate(state)
+    _train_step_fn = _import_train_step(config.num_thoughts)
     p_train_step = jax.pmap(
-        partial(train_step, encoder_apply_fn=encoder_model.apply, config=config),
+        partial(_train_step_fn, encoder_apply_fn=encoder_model.apply, config=config),
         axis_name="batch", donate_argnums=(0,),
     )
 

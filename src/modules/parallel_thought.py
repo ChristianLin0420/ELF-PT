@@ -73,12 +73,18 @@ class ELF_PT(ELF):
     def __call__(
         self, x, t, intra_mask=None, inter_mask=None,
         deterministic=True, self_cond_cfg_scale=None, decoder_step_active=None,
+        return_pre_unembed: bool = False,
     ):
         """x: (B, K*L, C). t: (B,).
         intra_mask/inter_mask: (B, K*L, K*L), 1=attend 0=masked.
 
         Note: callers must encode padding/conditioning constraints directly into intra_mask
         and inter_mask. ELF's single-mask attention_mask parameter is not supported here.
+
+        When return_pre_unembed=True, returns (x_pre_unembed, None) where
+        x_pre_unembed has shape (B, K*L, hidden_size). The caller is responsible
+        for aggregating across K thoughts and applying the unembed kernel.
+        The FinalLayer and decoder unembed path are skipped entirely.
         """
         patch_size = 1
         head_dim = self.hidden_size // self.num_heads
@@ -162,12 +168,23 @@ class ELF_PT(ELF):
         x = x[:, prefix_total:]
 
         # Factored decoder unembedding: hidden -> text_encoder_dim -> vocab
-        decoder_logits = None
+        # Register all unembed params unconditionally so they are always initialized.
         bn = self.text_encoder_dim
         proj_kernel = self.param('proj_kernel', DEFAULT_KERNEL_INIT, (self.hidden_size, bn))
         proj_bias = self.param('proj_bias', DEFAULT_BIAS_INIT, (bn,))
         unembed_kernel = self.param('unembed_kernel', DEFAULT_KERNEL_INIT, (bn, self.vocab_size))
         unembed_bias = self.param('unembed_bias', DEFAULT_BIAS_INIT, (self.vocab_size,))
+
+        # Always run FinalLayer so its params are registered during init, even in
+        # pre-unembed mode.  Store result but only return it when not pre-unembed.
+        output = FinalLayer(self.hidden_size, patch_size, self.text_encoder_dim, name='final_layer')(x)
+
+        # Pre-unembed return path: caller aggregates K thoughts and applies unembed itself.
+        # x shape: (B, K*L, hidden_size).
+        if return_pre_unembed:
+            return x, None
+
+        decoder_logits = None
         if decoder_step_active is not None:
             decoder_logits = jax.lax.cond(
                 decoder_step_active,
@@ -176,7 +193,6 @@ class ELF_PT(ELF):
                 x,
             )
 
-        output = FinalLayer(self.hidden_size, patch_size, self.text_encoder_dim, name='final_layer')(x)
         return output, decoder_logits
 
 
