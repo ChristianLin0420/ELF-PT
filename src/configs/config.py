@@ -62,6 +62,12 @@ class Config:
     diversity_repulsion_gamma_max: float = 0.5     # peak repulsion step size (LaDiR γ)
     diversity_repulsion_sigma: float = 1.0         # RBF kernel bandwidth in latent space
 
+    # Parallel-thought reasoning extension (ELF-PT-R)
+    num_reasoning_thoughts: int = 0          # K reasoning thoughts; 0 disables R-mode (fall back to ELF-PT)
+    use_causal_inter_mask: bool = False      # if True, answer attends reasoning but reasoning ↛ answer
+    diversity_loss_weight: float = 0.01      # λ_div for pairwise cosine penalty on reasoning slots
+    diversity_loss_t_gating: bool = True     # if True, weight diversity loss by 4*mean(t)*(1-mean(t))
+
     # Denoiser objective
     denoiser_p_mean: float = 0.8
     denoiser_p_std: float = 0.8
