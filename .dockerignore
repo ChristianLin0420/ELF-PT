@@ -1,0 +1,8 @@
+.git
+.claude
+assets
+outputs
+**/__pycache__
+**/*.pyc
+.venv
+*.egg-info
