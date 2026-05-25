@@ -7,6 +7,7 @@ training step.
 
 Reuses Attention / SwiGLUFFN / RMSNorm from src/modules/layers.py.
 """
+import jax
 import jax.numpy as jnp
 import flax.linen as nn
 
@@ -158,18 +159,12 @@ def encode_only(params, x, attention_mask, hidden_size=512, memory_tokens=16,
     """Run the encoder of a frozen CotVAE and return the mean latent (mu).
     Used by encode_cot_vae.py.
     """
-    import jax
     model = CotVAE(hidden_size=hidden_size, memory_tokens=memory_tokens,
                    num_enc_layers=num_enc_layers, num_heads=num_heads)
-    # Apply with deterministic=True and no rng -> returns mu via recon path,
-    # but we want just mu. Call encoder submodule directly:
+
     @jax.jit
     def _enc(p, xi, mi):
         out = model.apply({'params': p}, xi, mi, rng=None, deterministic=True)
         # out = (recon, mu, log_var, z=mu when rng None)
         return out[1]
     return _enc(params, x, attention_mask)
-
-
-# Avoid jax import at module level for the @jax.jit inside encode_only
-import jax  # noqa: E402
