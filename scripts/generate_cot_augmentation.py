@@ -39,20 +39,29 @@ OUT_DIR = "/cache/hf/datasets/local-gsm8k-cot-augmented-train"
 CHECKPOINT_DIR = "/cache/hf/datasets/_cotgen_ckpt"
 
 ANS_RE = re.compile(r"####\s*(-?[\d,\.]+)")
+# Qwen-Math models default to \boxed{N} LaTeX output even when prompted otherwise.
+BOXED_RE = re.compile(r"\\boxed\{\s*(-?[\d,\.]+)\s*\}")
+# Generic "the answer is N" fallback.
+ANSWER_IS_RE = re.compile(r"answer\s+is[:\s]+\$?\\?(-?[\d,\.]+)", re.IGNORECASE)
+
+
+def _norm(num_str: str) -> str:
+    return num_str.strip().replace(",", "").rstrip(".")
 
 
 def parse_gold(answer: str) -> str | None:
+    # GSM8K gold uses "#### N" by construction
     m = ANS_RE.search(answer)
-    if not m:
-        return None
-    return m.group(1).strip().replace(",", "").rstrip(".")
+    return _norm(m.group(1)) if m else None
 
 
 def parse_pred(text: str) -> str | None:
-    m = ANS_RE.search(text)
-    if not m:
-        return None
-    return m.group(1).strip().replace(",", "").rstrip(".")
+    """Robust parser: try `#### N`, then `\\boxed{N}`, then `the answer is N`."""
+    for regex in (ANS_RE, BOXED_RE, ANSWER_IS_RE):
+        m = regex.search(text)
+        if m:
+            return _norm(m.group(1))
+    return None
 
 
 def make_prompt(tokenizer, question: str) -> str:
