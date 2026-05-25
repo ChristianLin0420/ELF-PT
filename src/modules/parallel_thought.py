@@ -181,19 +181,21 @@ class ELF_PT(ELF):
         # pre-unembed mode.  Store result but only return it when not pre-unembed.
         output = FinalLayer(self.hidden_size, patch_size, self.text_encoder_dim, name='final_layer')(x)
 
-        # R-mode: num_reasoning_thoughts > 0.  Bypass aggregator; expose only the
-        # answer slot (last L positions of the K_total * L sequence).
+        # R-mode: num_reasoning_thoughts > 0. LaDiR-style: denoiser branch returns the
+        # FULL (B, K_total*L, D) velocity prediction so the caller can MSE all slots
+        # against their per-slot v_target. Decoder branch still slices the answer slot
+        # for the unembed call (only the answer is decoded to text).
         if self.num_reasoning_thoughts > 0:
             K_total = self.num_reasoning_thoughts + 1
             L_slot = x.shape[1] // K_total
-            # Sow full pre-final hidden states for diversity loss in the train step.
-            # x has shape (B, K_total * L_slot, hidden_size) at this point.
+            # Sow full pre-final hidden states (for optional training-time diversity).
             self.sow('intermediates', 'hidden_pre_final_full', x)
             if return_pre_unembed:
-                # Return the answer slot's hidden states before FinalLayer/unembed.
+                # Decoder branch: only the answer slot is decoded; slice it for unembed.
                 return x[:, -L_slot:, :], None
-            # Denoiser branch: FinalLayer already ran on the full sequence; slice answer slot.
-            return output[:, -L_slot:, :], None
+            # Denoiser branch: return full sequence; the train step will reshape to
+            # (B, K_total, L, D) and compute per-slot MSE against v_target_per.
+            return output, None
 
         # Pre-unembed return path: aggregate K thoughts internally then return (B, L, hidden_size).
         if return_pre_unembed:

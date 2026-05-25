@@ -1,8 +1,7 @@
-# Ablation 01: ELF baseline (vanilla, K=1, no parallel thought)
-# Routes through original train_step.py and ELF_models (not ELF-PT).
+# Ablation 01: ELF baseline on GSM8K (vanilla K=1, no parallel thought).
 
-data_path: "embedded-language-flows/wmt14_de-en_train_t5"
-eval_data_path: "embedded-language-flows/wmt14_de-en_validation_t5"
+data_path: "/cache/hf/datasets/local-gsm8k-t5-train"
+eval_data_path: "/cache/hf/datasets/local-gsm8k-t5-test"
 
 encoder_model_name: t5-small
 encoder_checkpoint: "embedded-language-flows/t5_small_encoder_jax/t5_small_encoder_jax.pkl"
@@ -17,7 +16,7 @@ bottleneck_dim: 128
 num_time_tokens: 4
 num_self_cond_cfg_tokens: 4
 num_model_mode_tokens: 4
-max_length: 128
+max_length: 512
 
 denoiser_p_mean: -1.5
 denoiser_p_std: 0.8
@@ -29,14 +28,13 @@ decoder_prob: 0.2
 decoder_noise_scale: 5.0
 decoder_p_mean: 0.8
 decoder_p_std: 0.8
-self_cond_prob: 0.5
+self_cond_prob: 0.0
 
-epochs: 1
-# batch 256 OOM'd on A100 80GB (60 GB single allocation, likely Muon optimizer state
-# + self-cond doubled input). Drop to 96 to match K_r=1 R-mode batch for fair compute.
-global_batch_size: 96
+epochs: 100
+global_batch_size: 32
 grad_accum_steps: 1
 blr: 0.001
+lr: 3.0e-4
 warmup_steps: 500
 optimizer: muon
 
@@ -52,6 +50,6 @@ eval_freq: 9999
 output_dir: outputs/ablation/01_elf_baseline
 online_eval: false
 use_wandb: true
-wandb_project: elf-pt-ablation
+wandb_project: elf-pt-gsm8k
 wandb_entity: crlc112358
 wandb_run_name: ablation_01_elf_baseline

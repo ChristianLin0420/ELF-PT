@@ -80,18 +80,19 @@ def train_step(
 
     batch_size, seq_length = x0.shape[0], x0.shape[1]
 
-    # ── Per-slot RNG split (K_total independent) ──────────────────────────
-    thought_t_rngs = jax.random.split(t_rng, K_total)
+    # ── Per-slot noise + single t per example (LaDiR-aligned) ─────────────
     thought_noise_rngs = jax.random.split(noise_rng, K_total)
 
-    # Sample K_total independent times, shape (B, K_total)
-    t_per = jnp.stack([
-        sample_timesteps(
-            thought_t_rngs[k], batch_size,
-            P_mean=config.denoiser_p_mean, P_std=config.denoiser_p_std,
-            time_schedule=config.time_schedule,
-        ) for k in range(K_total)
-    ], axis=1)  # (B, K_total)
+    # ONE t per example, broadcast to all K_total slots. Matches LaDiR: each
+    # data sample under diffusion_batch_mul gets a single t. Removes the
+    # t_mean mismatch where the model's time embedding disagreed with per-slot
+    # noise levels.
+    t_single = sample_timesteps(
+        t_rng, batch_size,
+        P_mean=config.denoiser_p_mean, P_std=config.denoiser_p_std,
+        time_schedule=config.time_schedule,
+    )                                                          # (B,)
+    t_per = jnp.broadcast_to(t_single[:, None], (batch_size, K_total))  # (B, K_total)
 
     # Sample K_total independent noises, shape (B, K_total, L, D)
     noise_per = jnp.stack([
@@ -287,18 +288,19 @@ def train_step(
             return ce_loss, ce_loss, jnp.zeros(()), jnp.zeros(())
 
         def _denoiser_branch(_):
-            # Denoiser mode: MSE on answer slot only + diversity loss on reasoning slots.
-            denoiser_t = t_per  # (B, K_total)
-            t_mean = denoiser_t.mean(axis=1)  # (B,)
+            # LaDiR-style: MSE over ALL K_total slots toward per-slot v_target.
+            # Each slot has independent noise (per-slot ε_k) and shared t (single
+            # t per example, broadcast). Diversity is INFERENCE-ONLY; training-time
+            # diversity is preserved for ablation but governed by diversity_loss_weight.
+            denoiser_t = t_per[:, 0]   # (B,) — all slots share the same t in this design
             denoiser_input = get_z_input(
                 params, denoiser_z, denoiser_t,
                 self_cond_cfg_input=self_cond_cfg_scale,
                 x_tokens_per=x0_per,
             )
-            # In R-mode the model returns (B, L, D_enc) — only the answer slot.
-            # We also need the intermediate hidden states for diversity loss.
-            (net_out_velocity, _decoder_logits_unused), sow_state = state.apply_fn(
-                {"params": params}, denoiser_input, t_mean,
+            # In R-mode the model now returns the FULL sequence (B, K_total*L, D_enc).
+            (net_out_full, _decoder_logits_unused), sow_state = state.apply_fn(
+                {"params": params}, denoiser_input, denoiser_t,
                 intra_mask=intra_mask_kk, inter_mask=inter_mask_kk,
                 deterministic=False,
                 rngs={"dropout": model_dropout_rng},
@@ -306,26 +308,23 @@ def train_step(
                 decoder_step_active=jnp.array(False),
                 mutable=['intermediates'],
             )
-            # net_out_velocity shape: (B, L, D_text_enc) — already sliced to answer in R-mode.
-            # v_target_per: (B, K_total, L, D). We need only the answer slot.
-            v_target_answer = v_target_per[:, -1, :, :]  # (B, L, D)
-            per_dim_loss = (net_out_velocity - v_target_answer) ** 2
-            per_token_loss = jnp.mean(per_dim_loss, axis=-1)  # (B, L)
-            l2_loss = reduce_token_loss(per_token_loss, loss_mask)
+            # Reshape (B, K_total*L, D) -> (B, K_total, L, D); MSE per slot then mean over K
+            B_, S_, D_ = net_out_full.shape
+            net_out_per = net_out_full.reshape(B_, K_total, seq_length, D_)
+            per_dim_loss = (net_out_per - v_target_per) ** 2                # (B, K_total, L, D)
+            per_token_loss = jnp.mean(per_dim_loss, axis=-1)                # (B, K_total, L)
+            per_token_loss_mean_k = per_token_loss.mean(axis=1)             # (B, L)
+            l2_loss = reduce_token_loss(per_token_loss_mean_k, loss_mask)
 
-            # ── Diversity loss on reasoning slots ─────────────────────────
+            # ── Optional diversity loss (kept for ablation; weight 0 by default) ──
             h_full = sow_state['intermediates']['hidden_pre_final_full'][0]
-            # h_full shape: (B, K_total * L, hidden_size). Reshape to (B, K_total, L, H).
-            B_, S_, H_ = h_full.shape
-            L_ = S_ // K_total
-            h_full_4d = h_full.reshape(B_, K_total, L_, H_)
-            # Time gate: use mean t across reasoning slots
-            t_reasoning = t_per[:, :K_r].mean(axis=1)   # (B,)
+            B_h, S_h, H_h = h_full.shape
+            h_full_4d = h_full.reshape(B_h, K_total, seq_length, H_h)
+            t_reasoning = t_per[:, :K_r].mean(axis=1)
             t_gate = t_reasoning if config.diversity_loss_t_gating else None
             div_loss = reasoning_diversity_loss(h_full_4d, K_reasoning=K_r, t_gating=t_gate)
 
             total_l2 = l2_loss + config.diversity_loss_weight * div_loss
-            # Return: (total_loss, ce_for_log, l2_for_log, div_for_log)
             return total_l2, jnp.zeros(()), l2_loss, div_loss
 
         loss, ce_loss, l2_loss, div_loss = jax.lax.cond(

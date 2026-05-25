@@ -108,8 +108,10 @@ def test_elf_pt_return_pre_unembed():
     assert second is None
 
 
-def test_elf_pt_r_returns_answer_slot_only():
-    """In R-mode (num_reasoning_thoughts > 0), the model output spans only the answer slot."""
+def test_elf_pt_r_returns_full_sequence():
+    """LaDiR-aligned: R-mode denoiser branch returns the FULL (B, K_total*L, D) velocity
+    prediction so the train step can MSE all slots against their per-slot v_targets.
+    The decoder branch (return_pre_unembed=True) still slices to the answer slot."""
     cls = ELF_PT_models['ELF-PT-B']
     K_r = 2
     K_total = K_r + 1
@@ -128,8 +130,8 @@ def test_elf_pt_r_returns_answer_slot_only():
     rng = jax.random.PRNGKey(0)
     params = model.init(rng, x, t, intra_mask=intra, inter_mask=inter)
     out, second = model.apply(params, x, t, intra_mask=intra, inter_mask=inter)
-    # In R-mode the model returns only the answer slot, shape (B, L, text_encoder_dim).
-    assert out.shape == (B, L, 512), f"expected (B={B}, L={L}, D=512), got {out.shape}"
+    # Full K_total*L sequence is returned in R-mode denoiser branch.
+    assert out.shape == (B, S, 512), f"expected (B={B}, S={S}, D=512), got {out.shape}"
     assert second is None
 
 
