@@ -100,8 +100,16 @@ def train_step(
         for k in range(K_total)
     ], axis=1)  # (B, K_total, L, D)
 
-    # Broadcast x0 across K_total
-    x0_per = jnp.broadcast_to(x0[:, None], (batch_size, K_total, seq_length, x0.shape[-1]))
+    # ── Per-slot x0_per construction ──────────────────────────────────────
+    # CoT-VAE recipe: reasoning slots get pre-computed VAE encodings of
+    # sampled CoTs; the answer slot gets T5(final-answer) as its target.
+    # Legacy mode (no reasoning_targets in batch): broadcast x0 to all slots.
+    if "reasoning_targets" in batch:
+        reasoning_targets = batch["reasoning_targets"]               # (B, K_r, L, D)
+        answer_target = x0[:, None, :, :]                            # (B, 1, L, D)
+        x0_per = jnp.concatenate([reasoning_targets, answer_target], axis=1)  # (B, K_total, L, D)
+    else:
+        x0_per = jnp.broadcast_to(x0[:, None], (batch_size, K_total, seq_length, x0.shape[-1]))
 
     cond_seq_mask = batch["cond_seq_mask"][:, :, None]  # (B, L, 1)
     attention_mask = batch["attention_mask"]
@@ -111,26 +119,56 @@ def train_step(
         loss_mask = jnp.ones_like(attention_mask)
     loss_mask = loss_mask * (1 - batch["cond_seq_mask"])
 
+    # ── Per-slot loss mask ─────────────────────────────────────────────────
+    # Reasoning slots: only the first S*M positions are supervised (mask in batch).
+    # Answer slot: existing loss_mask (non-cond, non-pad positions).
+    if "reasoning_loss_mask" in batch:
+        reasoning_loss_mask = batch["reasoning_loss_mask"].astype(jnp.float32)   # (B, K_r, L)
+        loss_mask_per = jnp.concatenate([
+            reasoning_loss_mask,
+            loss_mask[:, None, :].astype(jnp.float32),                            # answer slot
+        ], axis=1)                                                                # (B, K_total, L)
+    else:
+        loss_mask_per = jnp.broadcast_to(loss_mask[:, None, :], (batch_size, K_total, seq_length))
+
     # ── Per-slot denoiser_z ────────────────────────────────────────────────
     t_exp = t_per[:, :, None, None]   # (B, K_total, 1, 1)
     denoiser_z_per = (
         t_exp * x0_per + (1 - t_exp) * noise_per * config.denoiser_noise_scale
     )
-    # Re-apply cond_seq_mask: cond positions keep x0 (no noise)
+    # Re-apply cond_seq_mask: only the ANSWER slot has meaningful cond tokens
+    # (its target is the T5-encoded [question | "#### N"] sequence).
+    # Reasoning slots' content is pure VAE latent — no cond positions to fix.
     cond_mask_exp = cond_seq_mask[:, None]  # (B, 1, L, 1)
-    denoiser_z_per = jnp.where(cond_mask_exp > 0, x0_per, denoiser_z_per)
+    if "reasoning_targets" in batch:
+        # Build a (B, K_total, L, 1) mask: cond positions ON only for the answer slot.
+        slot_is_answer = jnp.arange(K_total) == (K_total - 1)         # (K_total,)
+        slot_is_answer = slot_is_answer[None, :, None, None]           # (1, K_total, 1, 1)
+        cond_per_slot = jnp.where(slot_is_answer, cond_mask_exp, jnp.zeros_like(cond_mask_exp))
+        denoiser_z_per = jnp.where(cond_per_slot > 0, x0_per, denoiser_z_per)
+    else:
+        denoiser_z_per = jnp.where(cond_mask_exp > 0, x0_per, denoiser_z_per)
 
-    # Label drop on denoiser_z and x0
+    # Label drop on denoiser_z and x0 (answer slot only in CoT-VAE mode)
     drop = batch["label_drop_mask"][:, None]
     if config.label_drop_prob > 0:
         drop_exp = drop[:, :, None, None]   # (B, 1, 1, 1)
-        denoiser_z_per = jnp.where(
-            drop_exp & (cond_mask_exp > 0),
-            jnp.zeros_like(denoiser_z_per),
-            denoiser_z_per,
-        )
-        x0 = jnp.where(drop[:, :, None] & (cond_seq_mask > 0), jnp.zeros_like(x0), x0)
-        x0_per = jnp.broadcast_to(x0[:, None], (batch_size, K_total, seq_length, x0.shape[-1]))
+        if "reasoning_targets" in batch:
+            # Only zero cond positions of the answer slot
+            zero_mask = drop_exp & (cond_per_slot > 0)
+            denoiser_z_per = jnp.where(zero_mask, jnp.zeros_like(denoiser_z_per), denoiser_z_per)
+            # Update the answer slot's x0 in x0_per (reasoning targets stay as-is)
+            x0 = jnp.where(drop[:, :, None] & (cond_seq_mask > 0), jnp.zeros_like(x0), x0)
+            answer_x0 = x0[:, None, :, :]                              # (B, 1, L, D)
+            x0_per = jnp.concatenate([x0_per[:, :K_r, :, :], answer_x0], axis=1)
+        else:
+            denoiser_z_per = jnp.where(
+                drop_exp & (cond_mask_exp > 0),
+                jnp.zeros_like(denoiser_z_per),
+                denoiser_z_per,
+            )
+            x0 = jnp.where(drop[:, :, None] & (cond_seq_mask > 0), jnp.zeros_like(x0), x0)
+            x0_per = jnp.broadcast_to(x0[:, None], (batch_size, K_total, seq_length, x0.shape[-1]))
 
     # Flatten K_total dim into S = K_total * L
     denoiser_z = denoiser_z_per.reshape(batch_size, K_total * seq_length, -1)
@@ -308,13 +346,15 @@ def train_step(
                 decoder_step_active=jnp.array(False),
                 mutable=['intermediates'],
             )
-            # Reshape (B, K_total*L, D) -> (B, K_total, L, D); MSE per slot then mean over K
+            # Reshape (B, K_total*L, D) -> (B, K_total, L, D); per-slot masked MSE.
             B_, S_, D_ = net_out_full.shape
             net_out_per = net_out_full.reshape(B_, K_total, seq_length, D_)
             per_dim_loss = (net_out_per - v_target_per) ** 2                # (B, K_total, L, D)
             per_token_loss = jnp.mean(per_dim_loss, axis=-1)                # (B, K_total, L)
-            per_token_loss_mean_k = per_token_loss.mean(axis=1)             # (B, L)
-            l2_loss = reduce_token_loss(per_token_loss_mean_k, loss_mask)
+            # Per-slot masking (reasoning slots: VAE-latent positions only;
+            # answer slot: non-cond text positions only).
+            masked = per_token_loss * loss_mask_per
+            l2_loss = masked.sum() / jnp.maximum(loss_mask_per.sum(), 1.0)
 
             # ── Optional diversity loss (kept for ablation; weight 0 by default) ──
             h_full = sow_state['intermediates']['hidden_pre_final_full'][0]

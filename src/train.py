@@ -315,6 +315,12 @@ def run_training(config):
         num_workers=config.num_workers, drop_last=True,
         max_seq_length=config.max_length, pad_token_id=pad_token_id,
         max_input_seq_length=config.max_input_length,
+        # CoT-VAE recipe: forwards the K-of-N sampling + per-slot mask logic to the collator
+        num_reasoning_thoughts=config.num_reasoning_thoughts,
+        num_cot_candidates=config.num_cot_candidates,
+        cot_vae_memory_tokens=config.cot_vae_memory_tokens,
+        cot_vae_max_segments=config.cot_vae_max_segments,
+        cot_vae_latent_dim=config.cot_vae_latent_dim,
     )
 
     # ============================================

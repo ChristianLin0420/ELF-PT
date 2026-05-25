@@ -68,6 +68,14 @@ class Config:
     diversity_loss_weight: float = 0.01      # λ_div for pairwise cosine penalty on reasoning slots
     diversity_loss_t_gating: bool = True     # if True, weight diversity loss by 4*mean(t)*(1-mean(t))
 
+    # CoT-VAE recipe (LaDiR-style chunked latents)
+    cot_vae_checkpoint: str = None           # path to frozen CotVAE; consumed by encode_cot_vae.py
+    num_cot_candidates: int = 0              # 0 = disable. Typically 9 (1 gold + 8 LLM-generated).
+    cot_vae_memory_tokens: int = 3           # LaDiR mem_size per segment
+    cot_vae_compression_rate: int = 8        # LaDiR mean_compression_rate (tokens per memory token)
+    cot_vae_max_segments: int = 8            # S cap for fixed storage shape
+    cot_vae_latent_dim: int = 512            # D; matches T5-small d_model — no projection
+
     # Denoiser objective
     denoiser_p_mean: float = 0.8
     denoiser_p_std: float = 0.8

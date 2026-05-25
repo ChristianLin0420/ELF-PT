@@ -1,0 +1,76 @@
+# ELF-PT-R + LaDiR-style CoT-VAE training on GSM8K.
+#
+# Reasoning slots are sampled from 9 pre-computed VAE encodings per example:
+#   1 gold reasoning  (gold answer minus the "#### N" line)
+# + 8 LLM-generated reasoning (each stripped of "#### N" / "\\boxed{N}")
+# Answer slot's T5 target = just "#### N" (the GSM8K eval objective).
+
+data_path: "/cache/hf/datasets/local-gsm8k-cot-vae-train"
+eval_data_path: "/cache/hf/datasets/local-gsm8k-t5-test"
+
+encoder_model_name: t5-small
+encoder_checkpoint: "embedded-language-flows/t5_small_encoder_jax/t5_small_encoder_jax.pkl"
+latent_mean: 0.0
+latent_std: 0.2
+
+model: ELF-PT-B
+num_thoughts: 3
+num_reasoning_thoughts: 2
+use_causal_inter_mask: true
+diversity_loss_weight: 0.0           # training-time diversity OFF (inference-only)
+diversity_repulsion_inference: true
+diversity_repulsion_gamma_max: 0.1
+diversity_repulsion_sigma: 1.0
+thought_block_pattern: "intra,inter"
+thought_aggregation: mean
+inter_block_zero_init: true
+
+# CoT-VAE recipe
+cot_vae_checkpoint: "/cache/hf/vae/cot_vae_m3_d512.pkl"
+num_cot_candidates: 9                # 1 gold + 8 LLM
+cot_vae_memory_tokens: 3             # LaDiR mem_size per segment
+cot_vae_compression_rate: 8
+cot_vae_max_segments: 8
+cot_vae_latent_dim: 512
+
+bottleneck_dim: 128
+num_time_tokens: 4
+num_self_cond_cfg_tokens: 4
+num_model_mode_tokens: 4
+max_length: 512
+
+denoiser_p_mean: -1.5
+denoiser_p_std: 0.8
+denoiser_noise_scale: 2.0
+t_eps: 0.05
+time_schedule: "logit_normal"
+
+decoder_prob: 0.2
+decoder_noise_scale: 5.0
+decoder_p_mean: 0.8
+decoder_p_std: 0.8
+self_cond_prob: 0.0                  # off in R-mode (avoids approximation path)
+
+epochs: 100
+global_batch_size: 8
+grad_accum_steps: 1
+blr: 0.001
+lr: 3.0e-4
+warmup_steps: 500
+optimizer: muon
+
+ema_decay1: 0.9999
+
+sampling_configs_path: "configs/sampling_configs/cond_sampling_configs.yml"
+num_samples: 8
+
+log_freq: 50
+save_freq: 9999
+eval_freq: 9999
+
+output_dir: outputs/gsm8k_cot_vae
+online_eval: false
+use_wandb: true
+wandb_project: elf-pt-cot-vae
+wandb_entity: crlc112358
+wandb_run_name: gsm8k_cot_vae_k2

@@ -61,8 +61,28 @@ def get_dataloader(
     pad_token_id: int = 0,
     max_input_seq_length: Optional[int] = None,
     distributed: bool = True,
+    # CoT-VAE recipe (see scripts/encode_cot_vae.py for column shapes)
+    num_reasoning_thoughts: int = 0,         # K_r; if 0, the new path is skipped
+    num_cot_candidates: int = 9,             # N candidates per row (1 gold + 8 LLM)
+    cot_vae_memory_tokens: int = 3,          # mem_size per segment
+    cot_vae_max_segments: int = 8,           # S cap
+    cot_vae_latent_dim: int = 512,
 ):
-    """Create a DataLoader."""
+    """Create a DataLoader.
+
+    When `num_reasoning_thoughts > 0` and the dataset row carries
+    `cot_vae_encodings`, the collator additionally produces:
+        result["reasoning_targets"]    : (B, K_r, max_seq_length, D)   float32
+        result["reasoning_loss_mask"]  : (B, K_r, max_seq_length)      bool
+    Each reasoning slot is filled with the candidate's S * mem_size latent
+    tokens at positions 0..S*mem_size-1, zero-padded to max_seq_length.
+    """
+
+    K_r = num_reasoning_thoughts
+    N = num_cot_candidates
+    M = cot_vae_memory_tokens
+    S_max = cot_vae_max_segments
+    D = cot_vae_latent_dim
 
     def collate_fn(batch_list):
         input_ids_list = [np.array(item["input_ids"]) for item in batch_list]
@@ -93,6 +113,31 @@ def get_dataloader(
         for key in ("index", "input", "target"):
             if key in batch_list[0]:
                 result[key] = [item[key] for item in batch_list]
+
+        # CoT-VAE: sample K_r of N candidates per row, build per-slot targets + mask
+        if K_r > 0 and "cot_vae_encodings" in batch_list[0]:
+            B = len(batch_list)
+            per_row_enc = np.zeros((B, K_r, max_seq_length, D), dtype=np.float32)
+            per_row_mask = np.zeros((B, K_r, max_seq_length), dtype=bool)
+            for b, item in enumerate(batch_list):
+                # Stored shape: flat list of length N * S_max * M * D
+                enc = np.array(item["cot_vae_encodings"], dtype=np.float32).reshape(
+                    N, S_max, M, D,
+                )
+                n_segments = np.array(item["cot_n_segments"], dtype=np.int32)
+                # Choose K_r distinct indices in [0, N) (random per step)
+                idx = np.random.choice(N, size=K_r, replace=False)
+                for k, ci in enumerate(idx):
+                    S = int(n_segments[ci])
+                    if S <= 0:
+                        continue
+                    # Flatten S segments of M latent tokens each -> (S*M, D)
+                    latent = enc[ci, :S].reshape(S * M, D)
+                    pos_count = min(latent.shape[0], max_seq_length)
+                    per_row_enc[b, k, :pos_count] = latent[:pos_count]
+                    per_row_mask[b, k, :pos_count] = True
+            result["reasoning_targets"] = per_row_enc
+            result["reasoning_loss_mask"] = per_row_mask
         return result
 
     common = dict(
