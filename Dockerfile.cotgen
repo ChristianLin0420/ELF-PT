@@ -1,0 +1,31 @@
+# Image for offline CoT augmentation with a GPU LLM (e.g., Qwen2.5-Math-7B-Instruct).
+# Separate from elf-pt:smoke because we need GPU torch (cuDNN 9) which conflicts with
+# the JAX-CUDA stack in the main image.
+#
+# Build:
+#   sudo docker build -f Dockerfile.cotgen -t elf-pt:cotgen .
+
+FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/cache/hf \
+    HF_HUB_ENABLE_HF_TRANSFER=0
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip
+RUN pip install \
+    "transformers>=4.45,<4.50" \
+    "tokenizers>=0.20" \
+    "datasets>=2.19.0" \
+    "huggingface-hub>=0.23.0" \
+    "accelerate>=0.34" \
+    "sentencepiece>=0.2.0" \
+    "protobuf>=4.21" \
+    "tqdm>=4.66"
+
+WORKDIR /workspace
