@@ -32,7 +32,9 @@ decoder_p_std: 0.8
 self_cond_prob: 0.5
 
 epochs: 1
-global_batch_size: 256
+# batch 256 OOM'd on A100 80GB (60 GB single allocation, likely Muon optimizer state
+# + self-cond doubled input). Drop to 96 to match K_r=1 R-mode batch for fair compute.
+global_batch_size: 96
 grad_accum_steps: 1
 blr: 0.001
 warmup_steps: 500
@@ -50,6 +52,6 @@ eval_freq: 9999
 output_dir: outputs/ablation/01_elf_baseline
 online_eval: false
 use_wandb: true
-wandb_project: elf-pt
+wandb_project: elf-pt-ablation
 wandb_entity: crlc112358
 wandb_run_name: ablation_01_elf_baseline

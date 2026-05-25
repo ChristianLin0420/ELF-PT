@@ -28,7 +28,7 @@ fi
 
 REPO="${REPO:-/localhome/local-chrislin/ELF-PT}"
 HF_CACHE="${HF_CACHE:-/localhome/local-chrislin/.cache/huggingface}"
-TIMEOUT_PER_RUN="${TIMEOUT_PER_RUN:-5400}"
+# No per-run timeout: each run completes its full epoch naturally.
 
 CONFIGS=(
     "01_elf_baseline"
@@ -68,7 +68,7 @@ for cfg in "${CONFIGS[@]}"; do
         -e HF_HOME=/cache/hf \
         -e WANDB_API_KEY="$WANDB_API_KEY" \
         elf-pt:smoke \
-        bash -c "cd /workspace/src && timeout ${TIMEOUT_PER_RUN} python train.py --config configs/training_configs/ablation/${cfg}.yml" \
+        bash -c "cd /workspace/src && python train.py --config configs/training_configs/ablation/${cfg}.yml" \
         > "$RUN_LOG" 2>&1 || true
 
     EXIT=$?

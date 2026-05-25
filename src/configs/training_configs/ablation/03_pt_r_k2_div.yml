@@ -55,6 +55,6 @@ eval_freq: 9999
 output_dir: outputs/ablation/03_pt_r_k2_div
 online_eval: false
 use_wandb: true
-wandb_project: elf-pt
+wandb_project: elf-pt-ablation
 wandb_entity: crlc112358
 wandb_run_name: ablation_03_pt_r_k2_div
