@@ -1,9 +1,17 @@
-"""Small β-VAE for compressing CoT text into M memory tokens × D-dim latents.
+"""LaDiR-style β-VAE for compressing CoT text into per-segment memory tokens.
 
-Used by the ELF-PT-R CoT-augmented recipe (see PLAN.md / plan file). The VAE
-is trained on T5-encoded CoT hidden states and then used (frozen) to encode
-N=8 augmented CoTs per GSM8K example into per-slot targets for the diffusion
-training step.
+Architecture matches LaDiR's chunked encoding:
+  - Each CoT is split into S fixed-length token segments (chunking is done
+    outside this module, by the caller).
+  - Each segment of T5-encoded hidden states is encoded into mem_size=3
+    memory tokens of dim D=512 (matches T5-small d_model — no projection).
+  - The caller concatenates per-segment outputs to form S * mem_size latent
+    tokens per CoT.
+
+Training (scripts/train_cot_vae.py):
+  - Per-segment VAE: mean-pooled-hidden reconstruction (MSE) + β·KL on the
+    memory-token bottleneck.
+  - Training input is 9 CoTs per GSM8K example (1 gold + 8 LLM-generated).
 
 Reuses Attention / SwiGLUFFN / RMSNorm from src/modules/layers.py.
 """
@@ -75,7 +83,7 @@ class CotEncoder(nn.Module):
     hidden_size: int = 512
     num_layers: int = 2
     num_heads: int = 8
-    memory_tokens: int = 16
+    memory_tokens: int = 3   # LaDiR mem_size per segment
 
     @nn.compact
     def __call__(self, x, attention_mask=None, deterministic=True):
@@ -103,7 +111,7 @@ class CotDecoder(nn.Module):
     """M memory tokens (z) -> M reconstructed memory tokens."""
     hidden_size: int = 512
     num_heads: int = 8
-    memory_tokens: int = 16
+    memory_tokens: int = 3   # LaDiR mem_size per segment
 
     @nn.compact
     def __call__(self, z, deterministic=True):
@@ -130,7 +138,7 @@ class CotVAE(nn.Module):
     (so the decoder reconstructs the structure-aware mean per chunk).
     """
     hidden_size: int = 512
-    memory_tokens: int = 16
+    memory_tokens: int = 3   # LaDiR mem_size per segment
     num_enc_layers: int = 2
     num_heads: int = 8
 
@@ -154,7 +162,7 @@ class CotVAE(nn.Module):
         return recon, mu, log_var, z
 
 
-def encode_only(params, x, attention_mask, hidden_size=512, memory_tokens=16,
+def encode_only(params, x, attention_mask, hidden_size=512, memory_tokens=3,
                 num_enc_layers=2, num_heads=8):
     """Run the encoder of a frozen CotVAE and return the mean latent (mu).
     Used by encode_cot_vae.py.
