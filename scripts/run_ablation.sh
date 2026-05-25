@@ -45,7 +45,7 @@ mkdir -p "$REPO/outputs/ablation"
 # Master log records the wall-clock summary across runs.
 MASTER_LOG="$REPO/outputs/ablation/master.log"
 echo "=== ABLATION RUN STARTED $(date) ===" | tee -a "$MASTER_LOG"
-echo "TIMEOUT_PER_RUN=${TIMEOUT_PER_RUN}s" | tee -a "$MASTER_LOG"
+echo "No per-run timeout: each run completes its full epoch." | tee -a "$MASTER_LOG"
 echo "Configs: ${CONFIGS[*]}" | tee -a "$MASTER_LOG"
 
 for cfg in "${CONFIGS[@]}"; do
