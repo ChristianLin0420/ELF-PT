@@ -404,6 +404,8 @@ def run_training(config):
                 avg_loss = float(jnp.mean(gathered["loss"]))
                 avg_l2_loss = float(jnp.mean(gathered["l2_loss"]))
                 avg_ce_loss = float(jnp.mean(gathered["ce_loss"]))
+                # diversity_loss is only present when the R-mode train step is active.
+                avg_div_loss = float(jnp.mean(gathered["diversity_loss"])) if "diversity_loss" in gathered else None
                 now = time.time()
                 steps_per_sec = (global_step - last_log_step) / max(now - last_log_time, 1e-8)
                 current_lr = lr_schedule((global_step - 1) // grad_accum_steps)
@@ -413,23 +415,29 @@ def run_training(config):
                     "l2": f"{avg_l2_loss:.4f}", "ce": f"{avg_ce_loss:.4f}",
                     "sps": f"{steps_per_sec:.1f}", "lr": f"{current_lr:.2e}",
                 }
+                if avg_div_loss is not None:
+                    postfix_dict["div"] = f"{avg_div_loss:.4f}"
                 log_for_0(postfix_dict)
                 epoch_pbar.set_postfix(**postfix_dict)
 
                 if jax.process_index() == 0:
+                    div_str = f", div={avg_div_loss:.4f}" if avg_div_loss is not None else ""
                     tqdm.write(
                         f"INFO - engine - Step {global_step}: loss={avg_loss:.4f}, "
-                        f"l2={avg_l2_loss:.4f}, ce={avg_ce_loss:.4f}, "
+                        f"l2={avg_l2_loss:.4f}, ce={avg_ce_loss:.4f}{div_str}, "
                         f"lr={current_lr:.2e}, steps/sec={steps_per_sec:.2f}"
                     )
                     if config.use_wandb:
                         current_epoch_progress = epoch + (step_in_epoch + 1) / steps_per_epoch
+                        wandb_log_dict = {
+                            "train_loss": avg_loss, "train_l2_loss": avg_l2_loss,
+                            "train_ce_loss": avg_ce_loss, "lr": current_lr,
+                            "epoch": current_epoch_progress, "step": global_step,
+                        }
+                        if avg_div_loss is not None:
+                            wandb_log_dict["train_diversity_loss"] = avg_div_loss
                         try:
-                            wandb.log({
-                                "train_loss": avg_loss, "train_l2_loss": avg_l2_loss,
-                                "train_ce_loss": avg_ce_loss, "lr": current_lr,
-                                "epoch": current_epoch_progress, "step": global_step,
-                            }, step=global_step)
+                            wandb.log(wandb_log_dict, step=global_step)
                         except Exception:
                             pass
 
