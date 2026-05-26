@@ -42,6 +42,12 @@ from flax.training import train_state
 from transformers import AutoTokenizer
 from tqdm import tqdm
 
+try:
+    import wandb
+    _HAS_WANDB = True
+except ImportError:
+    _HAS_WANDB = False
+
 from modules.t5_encoder import get_encoder
 from modules.cot_vae import CotVAE
 from utils.cot_preprocessing import strip_answer, chunk_token_ids
@@ -130,7 +136,29 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--batch", type=int, default=BATCH_CHUNKS)
     parser.add_argument("--out", type=str, default=OUT_PATH)
+    parser.add_argument("--wandb_project", default="elf-pt-cot-vae")
+    parser.add_argument("--wandb_entity", default="crlc112358")
+    parser.add_argument("--wandb_run_name", default="cot_vae_m3_d512")
+    parser.add_argument("--no_wandb", action="store_true")
     args = parser.parse_args()
+
+    use_wandb = (_HAS_WANDB and not args.no_wandb
+                 and os.environ.get("WANDB_MODE", "").lower() != "disabled"
+                 and os.environ.get("WANDB_API_KEY"))
+    if use_wandb:
+        wandb.init(
+            project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_run_name,
+            config={
+                "mem_size": MEM_SIZE, "compression_rate": COMPRESSION_RATE,
+                "max_segments": MAX_SEGMENTS, "chunk_pad_len": CHUNK_PAD_LEN,
+                "latent_dim": LATENT_DIM, "epochs": args.epochs, "batch": args.batch,
+                "lr": LR, "beta_max": BETA_MAX, "beta_warmup_steps": BETA_WARMUP_STEPS,
+            },
+            dir="/tmp", settings=wandb.Settings(start_method="thread"),
+        )
+        print(f"wandb: {wandb.run.url}")
+    else:
+        print("wandb: disabled (no API key or --no_wandb)")
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
@@ -213,10 +241,23 @@ def main() -> None:
                     kl=f"{running_kl/(i+1):.4f}",
                     beta=f"{float(beta):.3f}",
                 )
+                if use_wandb:
+                    wandb.log({
+                        "train/loss":  float(loss),
+                        "train/recon": float(recon_loss),
+                        "train/kl":    float(kl),
+                        "train/beta":  float(beta),
+                        "train/lr":    LR,
+                        "epoch":       epoch + (i + 1) / steps_per_epoch,
+                        "step":        step,
+                    }, step=step)
 
     print(f"\nsaving VAE params to {args.out}")
     with open(args.out, "wb") as f:
         pickle.dump(jax.device_get(state.params), f)
+
+    if use_wandb:
+        wandb.finish()
 
     print("done.")
 
